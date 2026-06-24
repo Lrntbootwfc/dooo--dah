@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chronicle Core: Sovereign AI Comic Workspace</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        :root { --sidebar-w: 320px; --transition-speed: 0.35s; }
+        
+        [data-theme="chai-code"] { --bg: #0b0d0e; --card: #131719; --text: #f3f4f6; --accent: #f97316; --border: #22282c; --glow: 0 0 20px rgba(249, 115, 22, 0.4); --glass: rgba(13, 17, 19, 0.8); }
+        [data-theme="futuristic"] { --bg: #03050d; --card: #070d1e; --text: #00f2fe; --accent: #00f2fe; --border: #131e3a; --glow: 0 0 25px rgba(0, 242, 254, 0.55); --glass: rgba(7, 13, 30, 0.7); }
+        [data-theme="dark"] { --bg: #0c0c0e; --card: #16161a; --text: #f7fafc; --accent: #9f7aea; --border: #26262f; --glow: 0 0 15px rgba(159, 122, 234, 0.2); --glass: rgba(22, 22, 26, 0.8); }
+        [data-theme="light"] { --bg: #f8f9fa; --card: #ffffff; --text: #1a202c; --accent: #6b46c1; --border: #e2e8f0; --glow: none; --glass: rgba(255, 255, 255, 0.9); }
+        [data-theme="minimalist"] { --bg: #ffffff; --card: #ffffff; --text: #000000; --accent: #000000; --border: #111111; --glow: none; --glass: #ffffff; }
+
+        body, html { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; transition: background var(--transition-speed); }
+        .flex { display: flex; }
+        .hidden { display: none !important; }
+
+        .auth-screen { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 9999; }
+        .auth-card { background: var(--glass); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); padding: 45px 40px; border-radius: 24px; border: 1px solid var(--border); width: 420px; box-shadow: 0 30px 60px rgba(0,0,0,0.4), var(--glow); text-align: center; }
+        .auth-card h2 { margin: 0 0 8px 0; font-size: 1.8rem; font-weight: 800; }
+        .auth-card p { margin: 0 0 30px 0; font-size: 0.9rem; opacity: 0.6; line-height: 1.4; }
+
+        .input-group { margin-bottom: 22px; text-align: left; }
+        .input-group label { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 8px; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.75px; }
+        .auth-input { width: 100%; background: rgba(0,0,0,0.2); color: var(--text); border: 1px solid var(--border); padding: 14px 16px; border-radius: 10px; box-sizing: border-box; outline: none; font-size: 1rem; transition: all 0.25s ease; }
+        .auth-input:focus { border-color: var(--accent); background: rgba(0,0,0,0.4); }
+
+        .btn { background: var(--accent); color: #fff; border: none; padding: 14px 24px; border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 1rem; width: 100%; transition: all 0.2s; box-shadow: var(--glow); }
+        .btn:hover { opacity: 0.93; transform: translateY(-1px); }
+
+        .sidebar { width: var(--sidebar-w); background: var(--card); border-right: 1px solid var(--border); height: 100vh; display: flex; flex-direction: column; padding: 25px; box-sizing: border-box; transition: transform var(--transition-speed) ease, margin-left var(--transition-speed) ease; position: relative; z-index: 10; }
+        .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-w)); transform: translateX(calc(-1 * var(--sidebar-w))); }
+        
+        .toggle-container { position: absolute; top: 20px; left: 20px; z-index: 100; }
+        .hamburger-btn { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 1.2rem; box-shadow: var(--glow); }
+
+        .tree-container { flex: 1; overflow-y: auto; margin-top: 15px; }
+        .node-block { margin: 4px 0; padding-left: 12px; position: relative; }
+        .node-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
+        .node-row:hover { background: var(--border); }
+        .node-row.active { background: var(--bg); border: 1px solid var(--accent); font-weight: bold; box-shadow: var(--glow); }
+        
+        .dots-menu-btn { cursor: pointer; padding: 2px 6px; border-radius: 4px; opacity: 0.5; font-weight: bold; }
+        .dots-menu-btn:hover { opacity: 1; background: var(--bg); color: var(--accent); }
+        
+        .context-menu { position: absolute; right: 10px; top: 32px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5), var(--glow); z-index: 999; width: 140px; padding: 5px 0; display: none; }
+        .context-menu div { padding: 8px 12px; font-size: 0.85rem; cursor: pointer; }
+        .context-menu div:hover { background: var(--border); color: var(--accent); }
+        .file-list { padding-left: 14px; margin-top: 4px; border-left: 1px dashed var(--border); margin-left: 10px; }
+
+        .main-workspace { flex: 1; height: 100vh; overflow-y: auto; padding: 40px 40px 40px 80px; box-sizing: border-box; }
+        .editor-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 35px; box-shadow: var(--glow); position: relative; }
+        .editor-area { width: 100%; height: 260px; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 8px; padding: 20px; box-sizing: border-box; overflow-y: auto; margin: 15px 0; outline: none; font-size: 1rem; line-height: 1.6; }
+        
+        .toolbar { display: flex; gap: 8px; background: var(--border); padding: 8px; border-radius: 8px; align-items: center; flex-wrap: wrap; }
+        .tool-btn { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+        .tool-select { width: auto; padding: 4px 8px; font-size: 0.85rem; background: var(--card); margin: 0; }
+        
+        .meta-counter-bar { display: flex; justify-content: flex-end; gap: 15px; font-size: 0.8rem; opacity: 0.7; margin-top: -10px; margin-bottom: 15px; }
+
+        .comic-panel { margin-top: 35px; border: 4px solid var(--text); background: #fff; padding: 20px; text-align: center; border-radius: 12px; box-shadow: 8px 8px 0px var(--text); }
+        .comic-img { max-width: 100%; max-height: 500px; border: 3px solid #000; }
+        .img-actions { display: flex; justify-content: center; gap: 15px; margin-top: 15px; }
+    </style>
+</head>
+<body data-theme="chai-code">
+
+    <div id="authScreen" class="auth-screen">
+        <div class="auth-card">
+            <span style="font-size: 2.5rem; filter: drop-shadow(var(--glow));">🔮</span>
+            <h2 style="margin: 10px 0;">Chronicle Vault</h2>
+            <p>Enter credentials to access your secure database volume chamber.</p>
+            
+            <div class="input-group">
+                <label>Vault Username</label>
+                <input type="text" id="authUsername" class="auth-input" value="admin">
+            </div>
+            
+            <div class="input-group">
+                <label>Cryptographic Passkey</label>
+                <input type="password" id="authPassword" class="auth-input" value="password123">
+            </div>
+            
+            <button class="btn" onclick="handleLogin()" style="margin-bottom: 10px;">Unseal Vault (Log In)</button>
+            <button class="btn" onclick="handleSignup()" style="background: transparent; color: var(--text); border: 1px solid var(--border); box-shadow: none;">Create New Account (Sign Up)</button>
+        </div>
+    </div>
+
+    <div class="toggle-container hidden" id="hamburgerWrapper">
+        <button class="hamburger-btn" onclick="toggleSidebar()">☰</button>
+    </div>
+
+    <div id="appInterface" class="flex hidden" style="height: 100vh;">
+        <div class="sidebar" id="sidebarNode">
+            <div style="height: 40px;"></div>
+            <label style="font-size: 0.75rem; text-transform: uppercase; font-weight:700; margin-bottom:6px; opacity:0.7;">System Aesthetics</label>
+            <select id="themeDropdown" onchange="changeTheme(this.value)">
+                <option value="chai-code" selected>Chai aur Code (Orange Matte)</option>
+                <option value="futuristic">Neo-Futuristic Quantum (Cyan)</option>
+                <option value="dark">Default Charcoal Dark</option>
+                <option value="light">Minimal Pristine Light</option>
+            </select>
+
+            <hr style="width:100%; border:0; border-top:1px solid var(--border); margin:12px 0;">
+            
+            <label style="font-size: 0.75rem; text-transform: uppercase; font-weight:700; margin-bottom:6px; opacity:0.7;">Comic Avatar Description</label>
+            <input type="text" id="avatarConfig" value="programmer in minimalist hoodie, sleek glasses" style="padding:8px; font-size:0.85rem; margin-bottom:12px;">
+
+            <button class="btn" style="padding:8px; font-size:0.85rem; background: #059669; margin-bottom:12px;" onclick="compileMonthlyComicPDF()">📦 Export Monthly Comic Book (PDF)</button>
+
+            <hr style="width:100%; border:0; border-top:1px solid var(--border); margin:12px 0;">
+
+            <div class="flex" style="justify-content: space-between; align-items:center; margin-bottom:5px;">
+                <h3 style="margin:0; font-size:1.1rem;">Ledger Systems</h3>
+                <button class="btn" style="padding: 4px 10px; font-size:0.8rem;" onclick="addRootFolder()">+ Root Folder</button>
+            </div>
+            
+            <div id="clipboardStatus" style="font-size:0.8rem; margin:5px 0; font-weight:bold; color:var(--accent);"></div>
+            <div class="tree-container" id="treeView" onclick="closeAllContextMenus()"></div>
+            
+            <button class="btn" style="background:#dc2626; padding: 10px; font-size: 0.85rem; margin-top:10px;" onclick="logout()">Terminate Session</button>
+        </div>
+
+        <div class="main-workspace" id="workspaceNode">
+            <div class="editor-box">
+                <div class="flex" style="justify-content: space-between; align-items: center; margin-bottom:5px;">
+                    <h2 id="openTitle" style="margin:0; font-size: 1.5rem;">No File Selection Target Active</h2>
+                    <button class="btn" style="padding: 10px 20px; font-size: 0.9rem;" onclick="saveActiveDocumentServer()">Save Document 💾</button>
+                </div>
+                <div style="font-size:0.8rem; opacity:0.6; margin-bottom:15px;" id="timestampBox"></div>
+
+                <div class="toolbar">
+                    <button class="tool-btn" onclick="executeRichFormat('bold')"><b>B</b></button>
+                    <button class="tool-btn" onclick="executeRichFormat('italic')"><i>I</i></button>
+                    <button class="tool-btn" onclick="executeRichFormat('underline')"><u>U</u></button>
+                    <select class="tool-select" onchange="executeRichFormat('formatBlock', this.value); this.selectedIndex=0;">
+                        <option value="" selected disabled>Headers</option>
+                        <option value="H1">Header 1</option>
+                        <option value="H2">Header 2</option>
+                        <option value="H3">Header 3</option>
+                    </select>
+                </div>
+
+                <div class="editor-area" id="editorEngine" contenteditable="true" oninput="updateMetadataCounters()">Select or create a document via the sidebar...</div>
+
+                <div class="meta-counter-bar">
+                    <span id="charCount">Characters: 0</span>
+                    <span id="wordCount">Words: 0</span>
+                </div>
+
+                <div class="flex" style="gap:20px; align-items:center;">
+                    <div style="flex:1;">
+                        <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:5px;">Mood Index</label>
+                        <select id="docMood" style="margin:0;"><option value="😊">Joy 😊</option><option value="💻">Code 💻</option><option value="🌌">Zen 🌌</option><option value="⚡">Chaos ⚡</option></select>
+                    </div>
+                </div>
+
+                <button class="btn" style="width:100%; padding:15px; margin-top:20px;" onclick="renderAICohesiveComicServer()">Compile Logs & Generate Comic Art Panel ✨</button>
+            </div>
+
+            <div class="comic-panel hidden" id="comicBoard">
+                <h3 style="color:#000; margin:0 0 15px 0;">Visual Projection Frame</h3>
+                <img id="comicFrameTarget" class="comic-img" src="" alt="AI Output Canvas">
+                <div class="img-actions">
+                    <button class="btn" style="background: #4b5563; padding: 8px 16px; font-size:0.9rem;" onclick="downloadActiveComicPanel()">📥 Download Panel PNG</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:5000/api";
+        let currentUser = null;
+        let vFileSystem = []; 
+        let currentFileId = null;
+        let clipboardAsset = null; 
+
+        function changeTheme(themeName) { document.body.setAttribute("data-theme", themeName); }
+        function toggleSidebar() {
+            const sidebar = document.getElementById("sidebarNode");
+            sidebar.classList.toggle("collapsed");
+        }
+
+        // --- REAL SERVER AUTH FLOWS ---
+        async function handleLogin() {
+            const username = document.getElementById("authUsername").value.trim();
+            const password = document.getElementById("authPassword").value.trim();
+            
+            try {
+                const res = await fetch(`${API_BASE}/login`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if(!res.ok) return alert(data.error);
+
+                currentUser = data.username;
+                vFileSystem = data.fs_tree;
+                document.getElementById("avatarConfig").value = data.avatar_desc;
+                
+                document.getElementById("authScreen").classList.add("hidden");
+                bootWorkspace();
+            } catch(e) { alert("Cannot reach server database context engine!"); }
+        }
+
+        async function handleSignup() {
+            const username = document.getElementById("authUsername").value.trim();
+            const password = document.getElementById("authPassword").value.trim();
+            
+            try {
+                const res = await fetch(`${API_BASE}/signup`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                alert(data.message || data.error);
+            } catch(e) { alert("Server pipeline connection failure."); }
+        }
+
+        function bootWorkspace() {
+            document.getElementById("appInterface").classList.remove("hidden");
+            document.getElementById("hamburgerWrapper").classList.remove("hidden");
+            renderTreeGrid();
+        }
+
+        async function syncWithServer() {
+            const avatar_desc = document.getElementById("avatarConfig").value;
+            await fetch(`${API_BASE}/save`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username: currentUser, fs_tree: vFileSystem, avatar_desc })
+            });
+        }
+
+        function logout() { location.reload(); }
+
+        function executeRichFormat(command, value = null) { document.execCommand(command, false, value); updateMetadataCounters(); }
+        function updateMetadataCounters() {
+            const text = document.getElementById("editorEngine").innerText.trim();
+            document.getElementById("charCount").innerText = `Characters: ${text.length}`;
+            document.getElementById("wordCount").innerText = `Words: ${text === "" ? 0 : text.split(/\s+/).length}`;
+        }
+
+        function renderTreeGrid() {
+            const container = document.getElementById("treeView");
+            container.innerHTML = "";
+            container.appendChild(buildRecursiveDOM(vFileSystem));
+        }
+
+        function buildRecursiveDOM(nodes) {
+            const wrapper = document.createElement("div");
+            nodes.forEach(node => {
+                const block = document.createElement("div");
+                block.className = "node-block";
+                const row = document.createElement("div");
+                row.className = `node-row ${currentFileId === node.id ? 'active' : ''}`;
+                
+                const titleSpan = document.createElement("span");
+                titleSpan.innerHTML = node.type === "folder" ? `📁 <b>${node.name}</b>` : `📄 ${node.name}`;
+                if(node.type === "file") { titleSpan.onclick = () => openDocument(node.id); }
+                row.appendChild(titleSpan);
+
+                const dots = document.createElement("span");
+                dots.className = "dots-menu-btn"; dots.innerText = "⋮";
+                dots.onclick = (e) => { e.stopPropagation(); closeAllContextMenus(); menuBox.style.display = "block"; };
+                row.appendChild(dots);
+
+                const menuBox = document.createElement("div");
+                menuBox.className = "context-menu";
+                if(node.type === "folder") {
+                    menuBox.innerHTML = `
+                        <div onclick="addChildFile('${node.id}')">+ New File</div>
+                        <div onclick="addChildFolder('${node.id}')">+ New Folder</div>
+                        <div onclick="renameNode('${node.id}')">Rename</div>
+                        <div onclick="pasteNode('${node.id}')">Paste</div>
+                        <div onclick="deleteNode('${node.id}')" style="color:red;">Delete</div>
+                    `;
+                } else {
+                    menuBox.innerHTML = `
+                        <div onclick="cutNode('${node.id}')">Cut</div>
+                        <div onclick="renameNode('${node.id}')">Rename</div>
+                        <div onclick="deleteNode('${node.id}')" style="color:red;">Delete</div>
+                    `;
+                }
+                row.appendChild(menuBox); block.appendChild(row);
+
+                if(node.type === "folder" && node.children && node.children.length > 0) {
+                    const subTree = buildRecursiveDOM(node.children);
+                    subTree.className = "file-list"; block.appendChild(subTree);
+                }
+                wrapper.appendChild(block);
+            });
+            return wrapper;
+        }
+
+        function closeAllContextMenus() { document.querySelectorAll('.context-menu').forEach(m => m.style.display = "none"); }
+
+        function addRootFolder() {
+            const t = prompt("Name root folder:"); if (!t) return;
+            vFileSystem.push({ id: "fold_" + Date.now(), type: "folder", name: t, children: [] });
+            renderTreeGrid(); syncWithServer();
+        }
+
+        function findNodeRecursive(nodes, id) {
+            for(let node of nodes) {
+                if(node.id === id) return node;
+                if(node.type === "folder" && node.children) {
+                    let found = findNodeRecursive(node.children, id); if(found) return found;
+                }
+            }
+            return null;
+        }
+
+        function removeNodeRecursive(nodes, id) {
+            for(let i=0; i<nodes.length; i++) {
+                if(nodes[i].id === id) return nodes.splice(i, 1)[0];
+                if(nodes[i].type === "folder" && nodes[i].children) {
+                    let removed = removeNodeRecursive(nodes[i].children, id); if(removed) return removed;
+                }
+            }
+            return null;
+        }
+
+        function addChildFile(parentFolderId) {
+            const t = prompt("File name:"); if(!t) return;
+            const parent = findNodeRecursive(vFileSystem, parentFolderId);
+            const stamp = new Date().toLocaleString();
+            const newFile = { id: "file_" + Date.now(), type: "file", name: t, content: "Write logs...", mood: "😊", created: stamp, edited: stamp, comic: "" };
+            parent.children.push(newFile); renderTreeGrid(); syncWithServer(); openDocument(newFile.id);
+        }
+
+        function addChildFolder(parentFolderId) {
+            const t = prompt("Folder name:"); if(!t) return;
+            const parent = findNodeRecursive(vFileSystem, parentFolderId);
+            parent.children.push({ id: "fold_" + Date.now(), type: "folder", name: t, children: [] });
+            renderTreeGrid(); syncWithServer();
+        }
+
+        function renameNode(id) {
+            const target = findNodeRecursive(vFileSystem, id);
+            const n = prompt("Rename:", target.name);
+            if(n) { target.name = n; renderTreeGrid(); syncWithServer(); if(currentFileId === id) document.getElementById("openTitle").innerText = "📄 " + n; }
+        }
+
+        function deleteNode(id) {
+            if(confirm("Delete item?")) {
+                removeNodeRecursive(vFileSystem, id);
+                if(currentFileId === id) {
+                    currentFileId = null;
+                    document.getElementById("openTitle").innerText = "No File Selection Active";
+                    document.getElementById("editorEngine").innerHTML = "";
+                    document.getElementById("comicBoard").classList.add("hidden");
+                }
+                renderTreeGrid(); syncWithServer();
+            }
+        }
+
+        function cutNode(id) {
+            clipboardAsset = removeNodeRecursive(vFileSystem, id);
+            document.getElementById("clipboardStatus").innerText = `Moving: [${clipboardAsset.name}]`;
+            renderTreeGrid();
+        }
+
+        function pasteNode(targetFolderId) {
+            if(!clipboardAsset) return;
+            const targetParent = findNodeRecursive(vFileSystem, targetFolderId);
+            targetParent.children.push(clipboardAsset); clipboardAsset = null;
+            document.getElementById("clipboardStatus").innerText = "";
+            renderTreeGrid(); syncWithServer();
+        }
+
+        function openDocument(id) {
+            currentFileId = id;
+            const doc = findNodeRecursive(vFileSystem, id);
+            if(doc) {
+                document.getElementById("openTitle").innerText = "📄 " + doc.name;
+                document.getElementById("editorEngine").innerHTML = doc.content;
+                document.getElementById("docMood").value = doc.mood;
+                document.getElementById("timestampBox").innerText = `Created: ${doc.created} | Revised: ${doc.edited}`;
+                updateMetadataCounters();
+                if (doc.comic) {
+                    document.getElementById("comicBoard").classList.remove("hidden");
+                    document.getElementById("comicFrameTarget").src = doc.comic;
+                } else { document.getElementById("comicBoard").classList.add("hidden"); }
+            }
+            renderTreeGrid();
+        }
+
+        async function saveActiveDocumentServer() {
+            if (!currentFileId) return alert("Select a file first!");
+            const doc = findNodeRecursive(vFileSystem, currentFileId);
+            if (doc) {
+                doc.content = document.getElementById("editorEngine").innerHTML;
+                doc.mood = document.getElementById("docMood").value;
+                doc.edited = new Date().toLocaleString();
+            }
+            renderTreeGrid();
+            await syncWithServer();
+            alert("Document synchronized permanently to backend SQLite cloud ledger!");
+        }
+
+        async function renderAICohesiveComicServer() {
+            if (!currentFileId) return alert("Select a file first!");
+            const rawContent = document.getElementById("editorEngine").innerText;
+            const currentMood = document.getElementById("docMood").value;
+            const avatarDescription = document.getElementById("avatarConfig").value.trim();
+            
+            if(!rawContent.trim()) return alert("Write some notes first!");
+
+            const img = document.getElementById("comicFrameTarget");
+            document.getElementById("comicBoard").classList.remove("hidden");
+            img.src = "https://images.squarespace-cdn.com/content/v1/5bde1447a977868019fb0ee7/1559867451375-GR32T0K0S5UVD8B5S7X1/loading-buffering.gif"; // Quick local loading placeholder
+
+            let avatarStr = avatarDescription ? `Recurring character: ${avatarDescription}. ` : "";
+            const finalPrompt = `Sequential 4-panel indie graphic novel layout grid. Black and white comic ink sketch style, sharp ink brush line detail, background scenery backdrop. ${avatarStr}Depicting scene context of mood ${currentMood}: ${rawContent}. No text speech bubbles.`;
+
+            try {
+                const res = await fetch(`${API_BASE}/render-comic`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: currentUser, prompt: finalPrompt })
+                });
+                const data = await res.json();
+                if(data.image_data_url) {
+                    img.src = data.image_data_url;
+                    const doc = findNodeRecursive(vFileSystem, currentFileId);
+                    if(doc) { doc.comic = data.image_data_url; }
+                    await syncWithServer();
+                } else { alert("Failed to render comic stream."); }
+            } catch(e) { alert("Error passing asset bytes."); }
+        }
+
+        function downloadActiveComicPanel() {
+            const a = document.createElement('a');
+            a.href = document.getElementById("comicFrameTarget").src;
+            a.download = `Panel_${Date.now()}.png`; a.click();
+        }
+
+        function getAllFilesRecursive(nodes) {
+            let files = [];
+            nodes.forEach(node => {
+                if(node.type === "file") files.push(node);
+                else if(node.type === "folder" && node.children) files = files.concat(getAllFilesRecursive(node.children));
+            });
+            return files;
+        }
+
+        function compileMonthlyComicPDF() {
+            const str = prompt("Enter target month context (e.g. '2026'):"); if(!str) return;
+            const files = getAllFilesRecursive(vFileSystem).filter(f => f.created.includes(str) && f.comic);
+            if(files.length === 0) return alert("No operational panels discovered.");
+
+            const { jsPDF } = window.jspdf; const pdf = new jsPDF('p', 'mm', 'a4');
+            files.forEach((f, i) => {
+                if (i > 0) pdf.addPage();
+                pdf.rect(10, 10, 190, 277); pdf.setFillColor(0,0,0); pdf.rect(10, 10, 190, 15, 'F');
+                pdf.setTextColor(255,255,255); pdf.setFontSize(14); pdf.text(`CHAPTER: ${f.name.toUpperCase()}`, 15, 20);
+                try { pdf.addImage(f.comic, 'PNG', 15, 35, 180, 180); } catch(e) { pdf.text("[Image Array Bound]", 50, 120); }
+            });
+            pdf.save(`Monthly_Comic_Book.pdf`);
+        }
+    </script>
+</body>
+</html>

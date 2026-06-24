@@ -1,0 +1,20 @@
+# Python Virtual Environments
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Local SQLite Database & User Vault Assets
+backend/vault_storage/
+*.db
+*.json
+
+# IDE / Editor Configurations
+.vscode/
+.idea/
+.DS_Store
+
+# Environment Variables / Sensitive Keys
+.env
+instance/
