@@ -3,169 +3,262 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chronicle Core: Sovereign AI Comic Workspace</title>
+    <title>Chronicle Core: Premium Studio Pad</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
-        :root { --sidebar-w: 320px; --transition-speed: 0.35s; }
-        
-        [data-theme="chai-code"] { --bg: #0b0d0e; --card: #131719; --text: #f3f4f6; --accent: #f97316; --border: #22282c; --glow: 0 0 20px rgba(249, 115, 22, 0.4); --glass: rgba(13, 17, 19, 0.8); }
-        [data-theme="futuristic"] { --bg: #03050d; --card: #070d1e; --text: #00f2fe; --accent: #00f2fe; --border: #131e3a; --glow: 0 0 25px rgba(0, 242, 254, 0.55); --glass: rgba(7, 13, 30, 0.7); }
-        [data-theme="dark"] { --bg: #0c0c0e; --card: #16161a; --text: #f7fafc; --accent: #9f7aea; --border: #26262f; --glow: 0 0 15px rgba(159, 122, 234, 0.2); --glass: rgba(22, 22, 26, 0.8); }
-        [data-theme="light"] { --bg: #f8f9fa; --card: #ffffff; --text: #1a202c; --accent: #6b46c1; --border: #e2e8f0; --glow: none; --glass: rgba(255, 255, 255, 0.9); }
-        [data-theme="minimalist"] { --bg: #ffffff; --card: #ffffff; --text: #000000; --accent: #000000; --border: #111111; --glow: none; --glass: #ffffff; }
+        :root { 
+            --sidebar-w: 320px; 
+            --transition-speed: 0.3s;
+            --outer-bg: #0b0d0e;
+            --pad-bg: #ffffff;
+            --pad-text: #1a202c;
+            --pad-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            --pad-border: none;
+            --pad-shadow: 0 12px 36px rgba(0,0,0,0.15);
+            --accent: #f97316;
+            --border: #22282c;
+            --card: #131719;
+            --text: #f3f4f6;
+        }
 
-        body, html { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; transition: background var(--transition-speed); }
+        body, html { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; background: #0b0c0e; color: #f3f4f6; height: 100vh; overflow: hidden; }
         .flex { display: flex; }
         .hidden { display: none !important; }
 
-        .auth-screen { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 9999; }
-        .auth-card { background: var(--glass); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); padding: 45px 40px; border-radius: 24px; border: 1px solid var(--border); width: 420px; box-shadow: 0 30px 60px rgba(0,0,0,0.4), var(--glow); text-align: center; }
+        /* ─── AUTH REGISTRATION PANEL ─── */
+        .auth-screen { position: fixed; inset: 0; background: #0b0d0e; display: flex; align-items: center; justify-content: center; z-index: 9999; }
+        .auth-card { background: rgba(19, 23, 25, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); padding: 45px 40px; border-radius: 24px; border: 1px solid #22282c; width: 420px; text-align: center; box-shadow: 0 30px 60px rgba(0,0,0,0.4); }
         .auth-card h2 { margin: 0 0 8px 0; font-size: 1.8rem; font-weight: 800; }
         .auth-card p { margin: 0 0 30px 0; font-size: 0.9rem; opacity: 0.6; line-height: 1.4; }
-
         .input-group { margin-bottom: 22px; text-align: left; }
         .input-group label { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 8px; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.75px; }
-        .auth-input { width: 100%; background: rgba(0,0,0,0.2); color: var(--text); border: 1px solid var(--border); padding: 14px 16px; border-radius: 10px; box-sizing: border-box; outline: none; font-size: 1rem; transition: all 0.25s ease; }
+        .auth-input { width: 100%; background: rgba(0,0,0,0.2); color: #fff; border: 1px solid #22282c; padding: 14px 16px; border-radius: 10px; box-sizing: border-box; outline: none; font-size: 1rem; transition: all 0.2s; }
         .auth-input:focus { border-color: var(--accent); background: rgba(0,0,0,0.4); }
 
-        .btn { background: var(--accent); color: #fff; border: none; padding: 14px 24px; border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 1rem; width: 100%; transition: all 0.2s; box-shadow: var(--glow); }
+        .btn { background: var(--accent); color: #fff; border: none; padding: 14px 24px; border-radius: 10px; cursor: pointer; font-weight: 700; font-size: 1rem; width: 100%; transition: all 0.2s; }
         .btn:hover { opacity: 0.93; transform: translateY(-1px); }
 
-        .sidebar { width: var(--sidebar-w); background: var(--card); border-right: 1px solid var(--border); height: 100vh; display: flex; flex-direction: column; padding: 25px; box-sizing: border-box; transition: transform var(--transition-speed) ease, margin-left var(--transition-speed) ease; position: relative; z-index: 10; }
-        .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-w)); transform: translateX(calc(-1 * var(--sidebar-w))); }
+        /* ─── WORKSPACE LAYOUT DECK ─── */
+        .sidebar { width: var(--sidebar-w); background: #131719; border-right: 1px solid #22282c; height: 100vh; display: flex; flex-direction: column; padding: 25px; box-sizing: border-box; overflow-y: auto; position: relative; z-index: 10; }
+        .workspace-scroller { flex: 1; height: 100vh; overflow-y: auto; background: var(--outer-bg); display: flex; justify-content: center; align-items: flex-start; padding: 5px 40px 40px 40px; box-sizing: border-box; position: relative; transition: background var(--transition-speed); }
         
-        .toggle-container { position: absolute; top: 20px; left: 20px; z-index: 100; }
-        .hamburger-btn { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 1.2rem; box-shadow: var(--glow); }
+        /* JOURNAL PAPER SLATE PAD */
+        .journal-pad { width: 100%; max-width: 800px; min-height: 850px; background: var(--pad-bg); color: var(--pad-text); font-family: var(--pad-font); border-left: var(--pad-border); box-shadow: var(--pad-shadow); border-radius: 6px; padding: 60px 55px; box-sizing: border-box; position: relative; margin-top: 40px; transition: all var(--transition-speed) ease; }
 
+        .pad-toolbar { display: flex; gap: 6px; background: #22282c; padding: 8px; border-radius: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 15px; border: 1px solid #2d353b; }
+        .tool-btn { background: #131719; color: #fff; border: 1px solid #22282c; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
+        .tool-btn:hover { background: var(--accent); }
+        .tool-select { width: auto; background: #131719; color: #fff; border: 1px solid #22282c; padding: 5px 8px; border-radius: 6px; font-size: 0.85rem; outline: none; }
+
+        /* INTEGRATED STICKER SYSTEM BAR INSIDE WRITING CANVA SHEETS */
+        .embedded-sticker-bar { background: #1a2228; border: 1px solid #2d353b; border-radius: 8px; padding: 10px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px; }
+        .sticker-category-tabs { display: flex; gap: 4px; }
+        .tab-btn { background: #131719; color: #fff; border: none; padding: 5px 10px; font-size: 0.75rem; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .tab-btn.active { background: var(--accent); }
+        .sticker-picker-grid { display: flex; gap: 10px; overflow-x: auto; background: #0b0d0e; padding: 8px; border-radius: 6px; font-size: 1.8rem; white-space: nowrap; }
+        .sticker-item { cursor: pointer; user-select: none; transition: transform 0.1s; display: inline-block; }
+        .sticker-item:hover { transform: scale(1.3); }
+
+        .editor-area { width: 100%; min-height: 400px; outline: none; font-size: 1.1rem; line-height: 1.7; position: relative; margin-bottom: 20px; word-break: break-word; }
+        
+        .uploaded-media-frame { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 15px; margin: 20px 0; text-align: center; background: rgba(0,0,0,0.02); position: relative; }
+        .uploaded-media-frame img { max-width: 280px; max-height: 280px; border-radius: 8px; }
+
+        /* MOVABLE INTERACTIVE PALETTE LAYER ELEMENTS */
+        .sticker-node { position: absolute; cursor: move; user-select: none; display: inline-block; z-index: 100; padding: 4px; font-size: 3.5rem; transition: transform 0.1s ease; line-height: 1; }
+        .sticker-node .delete-sticker { position: absolute; top: -5px; right: -5px; background: #ef4444; color: white; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; display: none; align-items: center; justify-content: center; cursor: pointer; font-weight: bold; }
+        .sticker-node:hover { border: 1px dashed #f97316; }
+        .sticker-node:hover .delete-sticker { display: flex; }
+
+        /* DIRECTORY RECURSION MANAGEMENT INTERFACES */
         .tree-container { flex: 1; overflow-y: auto; margin-top: 15px; }
-        .node-block { margin: 4px 0; padding-left: 12px; position: relative; }
+        .node-block { margin: 4px 0; padding-left: 8px; position: relative; }
         .node-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
-        .node-row:hover { background: var(--border); }
-        .node-row.active { background: var(--bg); border: 1px solid var(--accent); font-weight: bold; box-shadow: var(--glow); }
+        .node-row:hover { background: #22282c; }
+        .node-row.active { background: #22282c; border: 1px solid var(--accent); font-weight: bold; }
+        .context-menu { position: absolute; right: 10px; top: 32px; background: #131719; border: 1px solid #22282c; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 999; width: 140px; padding: 5px 0; display: none; }
+        .context-menu div { padding: 8px 12px; font-size: 0.85rem; cursor: pointer; color: #f3f4f6; text-align: left; }
+        .context-menu div:hover { background: #22282c; color: var(--accent); }
+        .file-list { padding-left: 14px; margin-top: 4px; border-left: 1px dashed #22282c; margin-left: 10px; }
         
-        .dots-menu-btn { cursor: pointer; padding: 2px 6px; border-radius: 4px; opacity: 0.5; font-weight: bold; }
-        .dots-menu-btn:hover { opacity: 1; background: var(--bg); color: var(--accent); }
-        
-        .context-menu { position: absolute; right: 10px; top: 32px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5), var(--glow); z-index: 999; width: 140px; padding: 5px 0; display: none; }
-        .context-menu div { padding: 8px 12px; font-size: 0.85rem; cursor: pointer; }
-        .context-menu div:hover { background: var(--border); color: var(--accent); }
-        .file-list { padding-left: 14px; margin-top: 4px; border-left: 1px dashed var(--border); margin-left: 10px; }
-
-        .main-workspace { flex: 1; height: 100vh; overflow-y: auto; padding: 40px 40px 40px 80px; box-sizing: border-box; }
-        .editor-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 35px; box-shadow: var(--glow); position: relative; }
-        .editor-area { width: 100%; height: 260px; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 8px; padding: 20px; box-sizing: border-box; overflow-y: auto; margin: 15px 0; outline: none; font-size: 1rem; line-height: 1.6; }
-        
-        .toolbar { display: flex; gap: 8px; background: var(--border); padding: 8px; border-radius: 8px; align-items: center; flex-wrap: wrap; }
-        .tool-btn { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
-        .tool-select { width: auto; padding: 4px 8px; font-size: 0.85rem; background: var(--card); margin: 0; }
-        
-        .meta-counter-bar { display: flex; justify-content: flex-end; gap: 15px; font-size: 0.8rem; opacity: 0.7; margin-top: -10px; margin-bottom: 15px; }
-
-        .comic-panel { margin-top: 35px; border: 4px solid var(--text); background: #fff; padding: 20px; text-align: center; border-radius: 12px; box-shadow: 8px 8px 0px var(--text); }
+        .meta-counter-bar { display: flex; justify-content: flex-end; gap: 15px; font-size: 0.8rem; opacity: 0.5; margin-bottom: 15px; }
+        .comic-panel { margin-top: 35px; border: 4px solid #000; background: #fff; padding: 20px; text-align: center; border-radius: 12px; box-shadow: 8px 8px 0px rgba(0,0,0,0.15); }
         .comic-img { max-width: 100%; max-height: 500px; border: 3px solid #000; }
-        .img-actions { display: flex; justify-content: center; gap: 15px; margin-top: 15px; }
     </style>
 </head>
-<body data-theme="chai-code">
+<body>
 
     <div id="authScreen" class="auth-screen">
         <div class="auth-card">
-            <span style="font-size: 2.5rem; filter: drop-shadow(var(--glow));">🔮</span>
-            <h2 style="margin: 10px 0;">Chronicle Vault</h2>
-            <p>Enter credentials to access your secure database volume chamber.</p>
-            
+            <h2>Chronicle Vault</h2>
+            <p style="font-size: 0.85rem; opacity: 0.6; margin-bottom: 20px;">Synchronized Local SQLite Database Ledger</p>
             <div class="input-group">
                 <label>Vault Username</label>
                 <input type="text" id="authUsername" class="auth-input" value="admin">
             </div>
-            
             <div class="input-group">
-                <label>Cryptographic Passkey</label>
+                <label>Passkey</label>
                 <input type="password" id="authPassword" class="auth-input" value="password123">
             </div>
-            
-            <button class="btn" onclick="handleLogin()" style="margin-bottom: 10px;">Unseal Vault (Log In)</button>
-            <button class="btn" onclick="handleSignup()" style="background: transparent; color: var(--text); border: 1px solid var(--border); box-shadow: none;">Create New Account (Sign Up)</button>
+            <button class="btn" onclick="handleLogin()" style="margin-bottom: 10px;">Unseal Vault</button>
+            <button class="btn" onclick="handleSignup()" style="background: transparent; color: #f3f4f6; border: 1px solid #22282c;">Create New Profile</button>
         </div>
     </div>
 
-    <div class="toggle-container hidden" id="hamburgerWrapper">
-        <button class="hamburger-btn" onclick="toggleSidebar()">☰</button>
-    </div>
-
     <div id="appInterface" class="flex hidden" style="height: 100vh;">
+        
         <div class="sidebar" id="sidebarNode">
-            <div style="height: 40px;"></div>
-            <label style="font-size: 0.75rem; text-transform: uppercase; font-weight:700; margin-bottom:6px; opacity:0.7;">System Aesthetics</label>
-            <select id="themeDropdown" onchange="changeTheme(this.value)">
-                <option value="chai-code" selected>Chai aur Code (Orange Matte)</option>
-                <option value="futuristic">Neo-Futuristic Quantum (Cyan)</option>
-                <option value="dark">Default Charcoal Dark</option>
-                <option value="light">Minimal Pristine Light</option>
+            <h3 style="margin: 0 0 15px 0; font-size: 1.1rem; border-bottom: 1px solid #22282c; padding-bottom: 8px;">Aesthetics Matrix</h3>
+            
+            <label style="font-size: 0.7rem; font-weight: 700; opacity: 0.6; display: block; margin-bottom: 4px;">1. Workspace Background Wallpaper</label>
+            <select id="outerWallpaperDropdown" class="tool-select" style="width: 100%; padding: 8px; margin-bottom: 15px;" onchange="applyOuterWallpaper(this.value)">
+                <optgroup label="Signature Brand Ecosystems">
+                    <option value="chai-code" selected>Orange Matte Accent</option>
+                    <option value="futuristic">Neo-Futuristic Quantum (Cyan)</option>
+                </optgroup>
+                <optgroup label="Standard Core Tones">
+                    <option value="dark">Charcoal Dark Mode</option>
+                    <option value="light">Pristine Gallery Light</option>
+                    <option value="minimalist">High Contrast Stark Matte</option>
+                </optgroup>
+                <optgroup label="Natural Textures">
+                    <option value="wood">Reclaimed Wood Grain 🪵</option>
+                    <option value="meadow">Fresh Grass Meadow 🌿</option>
+                    <option value="ocean">Deep Sea Blue Surf 🌊</option>
+                    <option value="linen">Woven Slate Linen 🧵</option>
+                    <option value="cork">Editorial Corkboard 📌</option>
+                </optgroup>
+                <optgroup label="Premium Gradients">
+                    <option value="sunset">Cyber Sunset Glow 🌅</option>
+                    <option value="aurora">Northern Aurora 🌌</option>
+                    <option value="cosmic">Space Dark Nebula 🚀</option>
+                    <option value="blossom">Sakura Blossom Rain 🌸</option>
+                    <option value="lavender">Lavender Mist 🪻</option>
+                    <option value="monsoon">Thunder Monsoon ⛈️</option>
+                </optgroup>
             </select>
 
-            <hr style="width:100%; border:0; border-top:1px solid var(--border); margin:12px 0;">
-            
-            <label style="font-size: 0.75rem; text-transform: uppercase; font-weight:700; margin-bottom:6px; opacity:0.7;">Comic Avatar Description</label>
-            <input type="text" id="avatarConfig" value="programmer in minimalist hoodie, sleek glasses" style="padding:8px; font-size:0.85rem; margin-bottom:12px;">
+            <label style="font-size: 0.7rem; font-weight: 700; opacity: 0.6; display: block; margin-bottom: 4px;">2. Writing Slate Pad Surface</label>
+            <select id="padStyleDropdown" class="tool-select" style="width: 100%; padding: 8px; margin-bottom: 15px;" onchange="applyPadStyle(this.value)">
+                <optgroup label="Classic Slates">
+                    <option value="clean-white">Pristine Sheet (Plain White)</option>
+                    <option value="legal-yellow">Rules Pad (Legal Yellow Margins)</option>
+                    <option value="parchment">Antique Log (Parchment Tan)</option>
+                    <option value="ivory-smooth">Smooth Minimalist Sheet (Soft Ivory)</option>
+                </optgroup>
+                <optgroup label="Matrix Grid Architectures">
+                    <option value="grid-graph">Mathematical Logic Grid (Graph Paper)</option>
+                    <option value="dotted-bullet">Creative Bullet Journal (Dotted Matrix)</option>
+                    <option value="vintage-ledger">Double Boundary Accounting Deck (Ledger lines)</option>
+                    <option value="isometric-dot">Structural Draft Perspective (Isometric Dots)</option>
+                </optgroup>
+                <optgroup label="Matte Executive Choices">
+                    <option value="midnight-graphite">Executive Charcoal Shield (Matte Graphite)</option>
+                    <option value="corporate-navy">Classic Professional Desk (Deep Navy Margins)</option>
+                    <option value="sage-mint">Serene Editorial Canvas (Calm Sage Green)</option>
+                </optgroup>
+                <optgroup label="Developer High Contrast Modules">
+                    <option value="dark-terminal">Hacker Console (Terminal Neon Green)</option>
+                    <option value="cyber-magenta">Synthwave Neon Grid (Dark Violet/Pink)</option>
+                    <option value="blueprint">Engineering Schematic Base (Blueprint Blue)</option>
+                    <option value="monochrome-noir">High Contrast Minimalist Noir (Stark Black Sheet)</option>
+                </optgroup>
+            </select>
 
-            <button class="btn" style="padding:8px; font-size:0.85rem; background: #059669; margin-bottom:12px;" onclick="compileMonthlyComicPDF()">📦 Export Monthly Comic Book (PDF)</button>
+            <hr style="width:100%; border:0; border-top:1px solid #22282c; margin:10px 0;">
+            <label style="font-size: 0.75rem; text-transform: uppercase; font-weight:700; margin-bottom:6px; opacity:0.7;">Comic Avatar Engine Traits</label>
+            <input type="text" id="avatarConfig" value="programmer in minimalist hoodie, sleek glasses" style="padding:10px; background:#0b0d0e; border:1px solid #22282c; color:#fff; border-radius:8px; font-size:0.85rem; margin-bottom:12px; width:100%; box-sizing:border-box;">
 
-            <hr style="width:100%; border:0; border-top:1px solid var(--border); margin:12px 0;">
+            <hr style="width:100%; border:0; border-top:1px solid #22282c; margin:10px 0;">
 
-            <div class="flex" style="justify-content: space-between; align-items:center; margin-bottom:5px;">
-                <h3 style="margin:0; font-size:1.1rem;">Ledger Systems</h3>
-                <button class="btn" style="padding: 4px 10px; font-size:0.8rem;" onclick="addRootFolder()">+ Root Folder</button>
+            <div class="flex" style="justify-content: space-between; align-items:center; margin-bottom:10px;">
+                <h4 style="margin:0; font-size:1rem; color:#fff;">Ledger Systems</h4>
+                <button class="tool-btn" style="padding: 4px 10px; font-size:0.8rem; background: var(--accent);" onclick="addRootFolder()">+ Root Folder</button>
             </div>
             
             <div id="clipboardStatus" style="font-size:0.8rem; margin:5px 0; font-weight:bold; color:var(--accent);"></div>
             <div class="tree-container" id="treeView" onclick="closeAllContextMenus()"></div>
             
-            <button class="btn" style="background:#dc2626; padding: 10px; font-size: 0.85rem; margin-top:10px;" onclick="logout()">Terminate Session</button>
+            <button class="btn" style="background:#059669; padding:12px; font-size:0.85rem; margin-top:15px;" onclick="compileSelectedFolderPDF()">📦 Export Folder Book to PDF</button>
+            <button class="btn" style="background:#dc2626; padding:10px; font-size: 0.85rem; margin-top:8px;" onclick="logout()">Terminate Session</button>
         </div>
 
-        <div class="main-workspace" id="workspaceNode">
-            <div class="editor-box">
-                <div class="flex" style="justify-content: space-between; align-items: center; margin-bottom:5px;">
-                    <h2 id="openTitle" style="margin:0; font-size: 1.5rem;">No File Selection Target Active</h2>
-                    <button class="btn" style="padding: 10px 20px; font-size: 0.9rem;" onclick="saveActiveDocumentServer()">Save Document 💾</button>
-                </div>
-                <div style="font-size:0.8rem; opacity:0.6; margin-bottom:15px;" id="timestampBox"></div>
+        <div class="workspace-scroller" id="workspaceScrollerNode">
+            <div class="journal-pad" id="journalPadSheet">
+                
+                <div class="pad-toolbar" contenteditable="false">
+                    <button class="tool-btn" onclick="executeRichFormat('bold')">B</button>
+                    <button class="tool-btn" onclick="executeRichFormat('italic')">I</button>
+                    <button class="tool-btn" onclick="executeRichFormat('underline')">U</button>
+                    <button class="tool-btn" onclick="executeRichFormat('strikeThrough')"><s>S</s></button>
+                    
+                    <select class="tool-select" onchange="executeRichFormat('fontName', this.value)">
+                        <option value="-apple-system, sans-serif">Default System</option>
+                        <option value="Georgia, serif">Georgia Editorial</option>
+                        <option value="'Courier New', monospace">Monospace Code</option>
+                    </select>
 
-                <div class="toolbar">
-                    <button class="tool-btn" onclick="executeRichFormat('bold')"><b>B</b></button>
-                    <button class="tool-btn" onclick="executeRichFormat('italic')"><i>I</i></button>
-                    <button class="tool-btn" onclick="executeRichFormat('underline')"><u>U</u></button>
-                    <select class="tool-select" onchange="executeRichFormat('formatBlock', this.value); this.selectedIndex=0;">
-                        <option value="" selected disabled>Headers</option>
+                    <select class="tool-select" onchange="executeRichFormat('formatBlock', this.value)">
+                        <option value="P">Paragraph</option>
                         <option value="H1">Header 1</option>
                         <option value="H2">Header 2</option>
                         <option value="H3">Header 3</option>
                     </select>
+                    
+                    <span style="font-size:0.85rem; color:#fff; margin-left:6px;">Mood:</span>
+                    <select id="docMood" class="tool-select"><option value="😊">Joy 😊</option><option value="💻">Code 💻</option><option value="🌌">Zen 🌌</option><option value="⚡">Chaos ⚡</option></select>
+
+                    <input type="color" onchange="executeRichFormat('foreColor', this.value)" title="Text Foreground" style="width:24px; height:24px; border:0; padding:0; background:transparent; cursor:pointer; margin-left:4px;">
+                    <input type="color" value="#ffff00" onchange="executeRichFormat('hiliteColor', this.value)" title="Text Highlighter" style="width:24px; height:24px; border:0; padding:0; background:transparent; cursor:pointer; margin-left:2px;">
+                    
+                    <button class="btn" style="width:auto; padding:6px 14px; font-size:0.85rem; margin-left:auto;" onclick="saveActiveDocumentServer()">Sync Pad 💾</button>
                 </div>
 
-                <div class="editor-area" id="editorEngine" contenteditable="true" oninput="updateMetadataCounters()">Select or create a document via the sidebar...</div>
+                <div class="embedded-sticker-bar" contenteditable="false">
+                    <div class="sticker-category-tabs">
+                        <button class="tab-btn active" onclick="loadEmojiCategory('faces')">Expressions</button>
+                        <button class="tab-btn" onclick="loadEmojiCategory('objects')">Tech/Objects</button>
+                        <button class="tab-btn" onclick="loadEmojiCategory('stars')">Icons</button>
+                    </div>
+                    <div class="sticker-picker-grid" id="stickerGridTarget"></div>
+                </div>
 
-                <div class="meta-counter-bar">
+                <div style="font-size:0.8rem; opacity:0.5; margin-bottom:15px;" id="timestampBox" contenteditable="false"></div>
+                <h2 id="openTitle" style="margin:0 0 25px 0; border-bottom:1px solid rgba(0,0,0,0.06); padding-bottom:10px;">Select a Ledger File Node</h2>
+
+                <div id="mediaUploadBox" class="uploaded-media-frame hidden" contenteditable="false">
+                    <p style="margin:0 0 10px 0; font-size:0.85rem; opacity:0.7; color: inherit;">Reference Image Attachment Captured</p>
+                    <img id="attachedImagePreview" src="" alt="Source Frame Buffer">
+                    <button class="tool-btn" style="background:#ef4444; display:block; margin:8px auto 0 auto;" onclick="removeAttachedImage()">Remove Media Attachment</button>
+                </div>
+                <div id="uploadTriggerBar" style="margin-bottom:20px;" contenteditable="false">
+                    <label style="font-size:0.85rem; font-weight:bold; cursor:pointer; color:var(--accent);">📷 Attach Reference Snapshot (Optional): </label>
+                    <input type="file" id="localImagePicker" accept="image/*" onchange="handleImageAttachment(event)">
+                </div>
+
+                <div class="editor-area" id="editorEngine" contenteditable="true" oninput="updateMetadataCounters()">Select or compile document vectors via the directory tree array to initialize context maps...</div>
+
+                <div class="meta-counter-bar" contenteditable="false">
                     <span id="charCount">Characters: 0</span>
                     <span id="wordCount">Words: 0</span>
                 </div>
-
-                <div class="flex" style="gap:20px; align-items:center;">
-                    <div style="flex:1;">
-                        <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:5px;">Mood Index</label>
-                        <select id="docMood" style="margin:0;"><option value="😊">Joy 😊</option><option value="💻">Code 💻</option><option value="🌌">Zen 🌌</option><option value="⚡">Chaos ⚡</option></select>
-                    </div>
+                
+                <hr style="border:0; border-top:1px dashed rgba(0,0,0,0.1); margin:40px 0;" contenteditable="false">
+                
+                <div style="margin-bottom: 20px;" contenteditable="false">
+                    <label style="font-size: 0.85rem; font-weight: bold; display: block; margin-bottom: 6px;">AI Spatial Interpretation Paradigm: (Only analyzed if image asset is active)</label>
+                    <select id="artIntegrationStyle" class="tool-select" style="width: 100%; padding: 8px;">
+                        <option value="interact">Story Mode Interaction</option>
+                        <option value="background">Background Scenery Placement</option>
+                        <option value="ignore">Disregard image asset structures entirely</option>
+                    </select>
                 </div>
 
-                <button class="btn" style="width:100%; padding:15px; margin-top:20px;" onclick="renderAICohesiveComicServer()">Compile Logs & Generate Comic Art Panel ✨</button>
-            </div>
+                <button class="btn" style="width:100%; padding:15px;" onclick="renderAICohesiveComicServer()">Compile Sequence Logs & Generate Graphic Panel ✨</button>
 
-            <div class="comic-panel hidden" id="comicBoard">
-                <h3 style="color:#000; margin:0 0 15px 0;">Visual Projection Frame</h3>
-                <img id="comicFrameTarget" class="comic-img" src="" alt="AI Output Canvas">
-                <div class="img-actions">
-                    <button class="btn" style="background: #4b5563; padding: 8px 16px; font-size:0.9rem;" onclick="downloadActiveComicPanel()">📥 Download Panel PNG</button>
+                <div class="comic-panel hidden" id="comicBoard" contenteditable="false">
+                    <h3 style="color:#000; margin:0 0 15px 0;">Visual Projection Frame</h3>
+                    <img id="comicFrameTarget" class="comic-img" src="" alt="AI Output Canvas">
                 </div>
             </div>
         </div>
@@ -176,68 +269,94 @@
         let currentUser = null;
         let vFileSystem = []; 
         let currentFileId = null;
-        let clipboardAsset = null; 
+        let activeAttachedImageBase64 = "";
+        let clipboardAsset = null;
 
-        function changeTheme(themeName) { document.body.setAttribute("data-theme", themeName); }
-        function toggleSidebar() {
-            const sidebar = document.getElementById("sidebarNode");
-            sidebar.classList.toggle("collapsed");
+        const emojiBanks = {
+            faces: ["😊", "🐱", "💻", "🎨", "🚀", "🔥", "💖", "⚡", "🌌", "🎉", "🐼", "🦊", "✨", "🌟", "💡"],
+            objects: ["📱", "⌨️", "🖥️", "📚", "🖊️", "☕", "🍕", "🎮", "🎸", "🎧", "📷", "🎒", "🛠️", "🔑", "📦"],
+            stars: ["⭐", "❤️", "📍", "🔔", "📎", "📁", "💬", "💭", "❌", "✔️", "⚠️", "🌀", "🐾", "🌈", "🏁"]
+        };
+
+        const wallpapers = {
+            "chai-code": "#0b0d0e", "futuristic": "#03050d", "dark": "#121214", "light": "#f8f9fa", "minimalist": "#ffffff",
+            "wood": "linear-gradient(rgba(0,0,0,0.15), rgba(0,0,0,0.15)), url('https://images.unsplash.com/photo-1541123437800-1bb1317badc2?q=80&width=1600') center/cover no-repeat fixed",
+            "meadow": "url('https://images.unsplash.com/photo-1533038590840-1cde6e668a91?q=80&width=1600') center/cover no-repeat fixed",
+            "ocean": "url('https://images.unsplash.com/photo-1505118380757-91f5f5632de0?q=80&width=1600') center/cover no-repeat fixed",
+            "linen": "url('https://images.unsplash.com/photo-1545062990-4a95e8e4b96d?q=80&width=1600') center/cover no-repeat fixed",
+            "cork": "url('https://images.unsplash.com/photo-1586075010923-2dd4570fb338?q=80&width=1600') center/cover no-repeat fixed",
+            "sunset": "linear-gradient(135deg, #2b1055, #7597de)", "aurora": "linear-gradient(135deg, #051937, #004d7a, #008793, #00bf72, #a8eb12)",
+            "cosmic": "linear-gradient(135deg, #000428, #004e92)", "blossom": "linear-gradient(135deg, #fbc2eb, #a6c1ee)", "lavender": "linear-gradient(135deg, #e0c3fc, #8ec5fc)",
+            "monsoon": "linear-gradient(135deg, #2c3e50, #bdc3c7)"
+        };
+
+        const padStyles = {
+            "clean-white": { bg: "#ffffff", text: "#1a202c", border: "none", shadow: "0 12px 36px rgba(0,0,0,0.15)", font: "-apple-system, sans-serif" },
+            "legal-yellow": { bg: "#fefeb3", text: "#000000", border: "left: 2px solid #ff8888", shadow: "0 12px 36px rgba(0,0,0,0.1)", font: "'Georgia', serif" },
+            "parchment": { bg: "#f4ecc8", text: "#4a3319", border: "none", shadow: "0 10px 30px rgba(0,0,0,0.2)", font: "'Georgia', serif" },
+            "ivory-smooth": { bg: "#fafaf6", text: "#1c1917", border: "none", shadow: "0 12px 40px rgba(0,0,0,0.08)", font: "-apple-system, sans-serif" },
+            "grid-graph": { bg: "#ffffff url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\" viewBox=\"0 0 20 20\"><rect width=\"20\" height=\"20\" fill=\"none\" stroke=\"%23e2e8f0\" stroke-width=\"1\"/></svg>')", text: "#2d3748", border: "none", shadow: "0 12px 36px rgba(0,0,0,0.1)", font: "monospace" },
+            "dotted-bullet": { bg: "#ffffff url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"25\" viewBox=\"0 0 25 25\"><circle cx=\"2\" cy=\"2\" r=\"1\" fill=\"%23cbd5e1\"/></svg>')", text: "#1a202c", border: "none", shadow: "0 12px 36px rgba(0,0,0,0.1)", font: "-apple-system, sans-serif" },
+            "vintage-ledger": { bg: "#fcfaf2 url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100%\" height=\"24\"><line x1=\"0\" y1=\"23\" x2=\"100%\" y2=\"23\" stroke=\"%23bce3f7\" stroke-width=\"1\"/></svg>')", text: "#1c1917", border: "left: 3px double #f87171", shadow: "0 12px 36px rgba(0,0,0,0.12)", font: "'Georgia', serif" },
+            "isometric-dot": { bg: "#ffffff url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"30\" height=\"17.32\" viewBox=\"0 0 30 17.32\"><circle cx=\"0\" cy=\"0\" r=\"1\" fill=\"%23cbd5e1\"/><circle cx=\"15\" cy=\"8.66\" r=\"1\" fill=\"%23cbd5e1\"/><circle cx=\"30\" cy=\"0\" r=\"1\" fill=\"%23cbd5e1\"/><circle cx=\"0\" cy=\"17.32\" r=\"1\" fill=\"%23cbd5e1\"/><circle cx=\"30\" cy=\"17.32\" r=\"1\" fill=\"%23cbd5e1\"/></svg>')", text: "#1a202c", border: "none", shadow: "0 12px 36px rgba(0,0,0,0.15)", font: "-apple-system, sans-serif" },
+            "midnight-graphite": { bg: "#262626", text: "#f5f5f5", border: "none", shadow: "0 20px 45px rgba(0,0,0,0.3)", font: "-apple-system, sans-serif" },
+            "corporate-navy": { bg: "#f8fafc", text: "#0f172a", border: "left: 3px solid #3b82f6", shadow: "0 12px 36px rgba(0,0,0,0.1)", font: "-apple-system, sans-serif" },
+            "sage-mint": { bg: "#f0f4f1", text: "#1e293b", border: "none", shadow: "0 12px 36px rgba(0,0,0,0.07)", font: "'Georgia', serif" },
+            "dark-terminal": { bg: "#0f141c", text: "#00ff66", border: "none", shadow: "0 20px 50px rgba(0,255,100,0.05)", font: "'Courier New', monospace" },
+            "cyber-magenta": { bg: "#1a0b2e url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"30\" height=\"30\" viewBox=\"0 0 30 30\"><rect width=\"30\" height=\"30\" fill=\"none\" stroke=\"%234c1d95\" stroke-width=\"1\"/></svg>')", text: "#ff007f", border: "none", shadow: "0 20px 50px rgba(255,0,127,0.1)", font: "'Courier New', monospace" },
+            "blueprint": { bg: "#0244a3 url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\"><rect width=\"40\" height=\"40\" fill=\"none\" stroke=\"%230d6efd\" stroke-width=\"0.5\"/></svg>')", text: "#ffffff", border: "none", shadow: "0 20px 45px rgba(0,0,0,0.2)", font: "monospace" },
+            "monochrome-noir": { bg: "#000000", text: "#ffffff", border: "none", shadow: "0 0 30px rgba(255,255,255,0.05)", font: "-apple-system, sans-serif" }
+        };
+
+        function applyOuterWallpaper(val) { document.getElementById("workspaceScrollerNode").style.background = wallpapers[val] || val; }
+        function applyPadStyle(val) {
+            const pad = document.getElementById("journalPadSheet"); const conf = padStyles[val];
+            if(conf) {
+                document.documentElement.style.setProperty('--pad-bg', conf.bg);
+                document.documentElement.style.setProperty('--pad-text', conf.text);
+                document.documentElement.style.setProperty('--pad-border', conf.border);
+                document.documentElement.style.setProperty('--pad-shadow', conf.shadow);
+                document.documentElement.style.setProperty('--pad-font', conf.font);
+            }
         }
 
-        // --- REAL SERVER AUTH FLOWS ---
+        function loadEmojiCategory(cat) {
+            const grid = document.getElementById("stickerGridTarget"); grid.innerHTML = "";
+            document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+            if(window.event && window.event.target.classList.contains("tab-btn")) { window.event.target.classList.add("active"); }
+            emojiBanks[cat].forEach(emoji => {
+                const item = document.createElement("div"); item.className = "sticker-item"; item.innerText = emoji;
+                item.onclick = () => injectSticker(emoji); grid.appendChild(item);
+            });
+        }
+
         async function handleLogin() {
             const username = document.getElementById("authUsername").value.trim();
             const password = document.getElementById("authPassword").value.trim();
-            
             try {
-                const res = await fetch(`${API_BASE}/login`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ username, password })
-                });
+                const res = await fetch(`${API_BASE}/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
                 const data = await res.json();
                 if(!res.ok) return alert(data.error);
-
-                currentUser = data.username;
-                vFileSystem = data.fs_tree;
-                document.getElementById("avatarConfig").value = data.avatar_desc;
-                
+                currentUser = data.username; vFileSystem = data.fs_tree;
                 document.getElementById("authScreen").classList.add("hidden");
-                bootWorkspace();
-            } catch(e) { alert("Cannot reach server database context engine!"); }
+                document.getElementById("appInterface").classList.remove("hidden");
+                loadEmojiCategory('faces'); renderTreeGrid(); applyOuterWallpaper("chai-code"); applyPadStyle("clean-white");
+            } catch(e) { alert("Cannot reach server database volume context engine!"); }
         }
 
         async function handleSignup() {
             const username = document.getElementById("authUsername").value.trim();
             const password = document.getElementById("authPassword").value.trim();
-            
             try {
-                const res = await fetch(`${API_BASE}/signup`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await res.json();
-                alert(data.message || data.error);
-            } catch(e) { alert("Server pipeline connection failure."); }
-        }
-
-        function bootWorkspace() {
-            document.getElementById("appInterface").classList.remove("hidden");
-            document.getElementById("hamburgerWrapper").classList.remove("hidden");
-            renderTreeGrid();
+                const res = await fetch(`${API_BASE}/signup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+                const data = await res.json(); alert(data.message || data.error);
+            } catch(e) { alert("Server connection deployment error."); }
         }
 
         async function syncWithServer() {
             const avatar_desc = document.getElementById("avatarConfig").value;
-            await fetch(`${API_BASE}/save`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ username: currentUser, fs_tree: vFileSystem, avatar_desc })
-            });
+            await fetch(`${API_BASE}/save`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: currentUser, fs_tree: vFileSystem, avatar_desc }) });
         }
-
-        function logout() { location.reload(); }
 
         function executeRichFormat(command, value = null) { document.execCommand(command, false, value); updateMetadataCounters(); }
         function updateMetadataCounters() {
@@ -246,27 +365,90 @@
             document.getElementById("wordCount").innerText = `Words: ${text === "" ? 0 : text.split(/\s+/).length}`;
         }
 
+        function handleImageAttachment(event) {
+            const file = event.target.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                activeAttachedImageBase64 = e.target.result;
+                document.getElementById("mediaUploadBox").classList.remove("hidden");
+                document.getElementById("attachedImagePreview").src = activeAttachedImageBase64;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function removeAttachedImage() {
+            activeAttachedImageBase64 = ""; document.getElementById("mediaUploadBox").classList.add("hidden");
+            document.getElementById("attachedImagePreview").src = ""; document.getElementById("localImagePicker").value = "";
+        }
+
+        function injectSticker(emojiChar) {
+            if(!currentFileId) return alert("Select an active document first!");
+            const pad = document.getElementById("journalPadSheet");
+            const node = document.createElement("div");
+            node.className = "sticker-node"; node.style.left = "150px"; node.style.top = "200px";
+            node.innerHTML = `${emojiChar}<div class="delete-sticker" onclick=\"this.parentElement.remove(); syncStickersToData();\">×</div>`;
+            setupDraggableElement(node);
+            node.ondblclick = () => {
+                let currentScale = node.style.transform ? parseFloat(node.style.transform.replace("scale(", "").replace(")", "")) : 1;
+                let nextScale = currentScale >= 2.5 ? 0.8 : currentScale + 0.3;
+                node.style.transform = `scale(${nextScale})`; syncStickersToData();
+            };
+            pad.appendChild(node); syncStickersToData();
+        }
+
+        function setupDraggableElement(elmnt) {
+            let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+            elmnt.onmousedown = (e) => {
+                if(e.target.className === "delete-sticker") return;
+                e.preventDefault(); pos3 = e.clientX; pos4 = e.clientY;
+                document.onmouseup = () => { document.onmouseup = null; document.onmousemove = null; syncStickersToData(); };
+                document.onmousemove = (ev) => {
+                    ev.preventDefault(); pos1 = pos3 - ev.clientX; pos2 = pos4 - ev.clientY;
+                    pos3 = ev.clientX; pos4 = ev.clientY;
+                    elmnt.style.top = (elmnt.offsetTop - pos2) + "px"; elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+                };
+            };
+        }
+
+        function syncStickersToData() {
+            if(!currentFileId) return; const doc = findNodeRecursive(vFileSystem, currentFileId);
+            if(doc) {
+                const collection = [];
+                document.querySelectorAll(".sticker-node").forEach(node => {
+                    collection.push({ char: node.childNodes[0].textContent, top: node.style.top, left: node.style.left, transform: node.style.transform });
+                });
+                doc.stickers = collection;
+            }
+        }
+
+        /* ─── STABLE TREE COMPILATION DIRECTORY MANAGERS ─── */
         function renderTreeGrid() {
-            const container = document.getElementById("treeView");
-            container.innerHTML = "";
+            const container = document.getElementById("treeView"); container.innerHTML = "";
             container.appendChild(buildRecursiveDOM(vFileSystem));
         }
 
         function buildRecursiveDOM(nodes) {
             const wrapper = document.createElement("div");
             nodes.forEach(node => {
-                const block = document.createElement("div");
-                block.className = "node-block";
-                const row = document.createElement("div");
-                row.className = `node-row ${currentFileId === node.id ? 'active' : ''}`;
+                const block = document.createElement("div"); block.className = "node-block";
+                const row = document.createElement("div"); row.className = `node-row ${currentFileId === node.id ? 'active' : ''}`;
+                if(node.type === "folder") row.setAttribute("data-folder-id", node.id);
                 
                 const titleSpan = document.createElement("span");
                 titleSpan.innerHTML = node.type === "folder" ? `📁 <b>${node.name}</b>` : `📄 ${node.name}`;
-                if(node.type === "file") { titleSpan.onclick = () => openDocument(node.id); }
+                
+                if(node.type === "file") { 
+                    titleSpan.onclick = () => openDocument(node.id); 
+                } else { 
+                    titleSpan.onclick = () => { 
+                        document.querySelectorAll('[data-folder-id]').forEach(f=>f.classList.remove('active')); 
+                        row.classList.add('active'); row.setAttribute('id', 'selectedFolderTarget'); 
+                    }; 
+                }
                 row.appendChild(titleSpan);
 
                 const dots = document.createElement("span");
-                dots.className = "dots-menu-btn"; dots.innerText = "⋮";
+                dots.className = "dots-menu-btn"; dots.innerText = " ⋮";
                 dots.onclick = (e) => { e.stopPropagation(); closeAllContextMenus(); menuBox.style.display = "block"; };
                 row.appendChild(dots);
 
@@ -275,23 +457,21 @@
                 if(node.type === "folder") {
                     menuBox.innerHTML = `
                         <div onclick="addChildFile('${node.id}')">+ New File</div>
-                        <div onclick="addChildFolder('${node.id}')">+ New Folder</div>
+                        <div onclick="addChildFolder('${node.id}')">+ Sub-Folder</div>
                         <div onclick="renameNode('${node.id}')">Rename</div>
-                        <div onclick="pasteNode('${node.id}')">Paste</div>
-                        <div onclick="deleteNode('${node.id}')" style="color:red;">Delete</div>
+                        <div onclick="pasteNode('${node.id}')">Paste here</div>
+                        <div onclick="deleteNode('${node.id}')" style="color:#ef4444;">Delete</div>
                     `;
                 } else {
                     menuBox.innerHTML = `
-                        <div onclick="cutNode('${node.id}')">Cut</div>
+                        <div onclick="cutNode('${node.id}')">Cut File</div>
                         <div onclick="renameNode('${node.id}')">Rename</div>
-                        <div onclick="deleteNode('${node.id}')" style="color:red;">Delete</div>
+                        <div onclick="deleteNode('${node.id}')" style="color:#ef4444;">Delete</div>
                     `;
                 }
                 row.appendChild(menuBox); block.appendChild(row);
-
-                if(node.type === "folder" && node.children && node.children.length > 0) {
-                    const subTree = buildRecursiveDOM(node.children);
-                    subTree.className = "file-list"; block.appendChild(subTree);
+                if(node.type === "folder" && node.children && node.children.length > 0) { 
+                    const subTree = buildRecursiveDOM(node.children); subTree.className = "file-list"; block.appendChild(subTree); 
                 }
                 wrapper.appendChild(block);
             });
@@ -301,42 +481,24 @@
         function closeAllContextMenus() { document.querySelectorAll('.context-menu').forEach(m => m.style.display = "none"); }
 
         function addRootFolder() {
-            const t = prompt("Name root folder:"); if (!t) return;
+            const t = prompt("Name root folder:"); if(!t) return;
             vFileSystem.push({ id: "fold_" + Date.now(), type: "folder", name: t, children: [] });
             renderTreeGrid(); syncWithServer();
-        }
-
-        function findNodeRecursive(nodes, id) {
-            for(let node of nodes) {
-                if(node.id === id) return node;
-                if(node.type === "folder" && node.children) {
-                    let found = findNodeRecursive(node.children, id); if(found) return found;
-                }
-            }
-            return null;
-        }
-
-        function removeNodeRecursive(nodes, id) {
-            for(let i=0; i<nodes.length; i++) {
-                if(nodes[i].id === id) return nodes.splice(i, 1)[0];
-                if(nodes[i].type === "folder" && nodes[i].children) {
-                    let removed = removeNodeRecursive(nodes[i].children, id); if(removed) return removed;
-                }
-            }
-            return null;
         }
 
         function addChildFile(parentFolderId) {
             const t = prompt("File name:"); if(!t) return;
             const parent = findNodeRecursive(vFileSystem, parentFolderId);
             const stamp = new Date().toLocaleString();
-            const newFile = { id: "file_" + Date.now(), type: "file", name: t, content: "Write logs...", mood: "😊", created: stamp, edited: stamp, comic: "" };
+            const newFile = { id: "file_" + Date.now(), type: "file", name: t, content: "Start writing...", mood: "😊", created: stamp, edited: stamp, comic: "" };
+            if(!parent.children) parent.children = [];
             parent.children.push(newFile); renderTreeGrid(); syncWithServer(); openDocument(newFile.id);
         }
 
         function addChildFolder(parentFolderId) {
             const t = prompt("Folder name:"); if(!t) return;
             const parent = findNodeRecursive(vFileSystem, parentFolderId);
+            if(!parent.children) parent.children = [];
             parent.children.push({ id: "fold_" + Date.now(), type: "folder", name: t, children: [] });
             renderTreeGrid(); syncWithServer();
         }
@@ -369,101 +531,145 @@
         function pasteNode(targetFolderId) {
             if(!clipboardAsset) return;
             const targetParent = findNodeRecursive(vFileSystem, targetFolderId);
+            if(!targetParent.children) targetParent.children = [];
             targetParent.children.push(clipboardAsset); clipboardAsset = null;
             document.getElementById("clipboardStatus").innerText = "";
             renderTreeGrid(); syncWithServer();
         }
 
+        function findNodeRecursive(nodes, id) {
+            for(let node of nodes) {
+                if(node.id === id) return node;
+                if(node.type === "folder" && node.children) {
+                    let found = findNodeRecursive(node.children, id); if(found) return found;
+                }
+            } return null;
+        }
+
+        function removeNodeRecursive(nodes, id) {
+            for(let i=0; i<nodes.length; i++) {
+                if(nodes[i].id === id) return nodes.splice(i, 1)[0];
+                if(nodes[i].type === "folder" && nodes[i].children) {
+                    let removed = removeNodeRecursive(nodes[i].children, id); if(removed) return removed;
+                }
+            } return null;
+        }
+
         function openDocument(id) {
-            currentFileId = id;
-            const doc = findNodeRecursive(vFileSystem, id);
+            currentFileId = id; const doc = findNodeRecursive(vFileSystem, id);
             if(doc) {
-                document.getElementById("openTitle").innerText = "📄 " + doc.name;
+                document.getElementById("openTitle").innerText = doc.name;
                 document.getElementById("editorEngine").innerHTML = doc.content;
-                document.getElementById("docMood").value = doc.mood;
-                document.getElementById("timestampBox").innerText = `Created: ${doc.created} | Revised: ${doc.edited}`;
+                document.getElementById("timestampBox").innerText = `Created: ${doc.created} | Revised: ${doc.edited || doc.created}`;
+                document.getElementById("docMood").value = doc.mood || "😊";
                 updateMetadataCounters();
-                if (doc.comic) {
+                
+                if(doc.attached_image) {
+                    activeAttachedImageBase64 = doc.attached_image;
+                    document.getElementById("mediaUploadBox").classList.remove("hidden");
+                    document.getElementById("attachedImagePreview").src = activeAttachedImageBase64;
+                } else { removeAttachedImage(); }
+
+                document.querySelectorAll(".sticker-node").forEach(n => n.remove());
+                (doc.stickers || []).forEach(stk => {
+                    const node = document.createElement("div"); node.className = "sticker-node"; node.style.top = stk.top; node.style.left = stk.left; node.style.transform = stk.transform || "";
+                    node.innerHTML = `${stk.char}<div class="delete-sticker" onclick=\"this.parentElement.remove(); syncStickersToData();\">×</div>`;
+                    setupDraggableElement(node); node.ondblclick = () => { let currentScale = node.style.transform ? parseFloat(node.style.transform.replace("scale(", "").replace(")", "")) : 1; let nextScale = currentScale >= 2.5 ? 0.8 : currentScale + 0.3; node.style.transform = `scale(${nextScale})`; syncStickersToData(); };
+                    document.getElementById("journalPadSheet").appendChild(node);
+                });
+
+                if(doc.comic) {
                     document.getElementById("comicBoard").classList.remove("hidden");
                     document.getElementById("comicFrameTarget").src = doc.comic;
                 } else { document.getElementById("comicBoard").classList.add("hidden"); }
-            }
-            renderTreeGrid();
+            } renderTreeGrid();
         }
 
         async function saveActiveDocumentServer() {
-            if (!currentFileId) return alert("Select a file first!");
-            const doc = findNodeRecursive(vFileSystem, currentFileId);
-            if (doc) {
+            if(!currentFileId) return alert("Select a document first!");
+            syncStickersToData(); const doc = findNodeRecursive(vFileSystem, currentFileId);
+            if(doc) {
                 doc.content = document.getElementById("editorEngine").innerHTML;
+                doc.attached_image = activeAttachedImageBase64;
                 doc.mood = document.getElementById("docMood").value;
                 doc.edited = new Date().toLocaleString();
             }
-            renderTreeGrid();
-            await syncWithServer();
-            alert("Document synchronized permanently to backend SQLite cloud ledger!");
+            await syncWithServer(); renderTreeGrid(); alert("Notebook committed permanently to database!");
         }
 
         async function renderAICohesiveComicServer() {
-            if (!currentFileId) return alert("Select a file first!");
+            if(!currentFileId) return alert("Select a document first!");
             const rawContent = document.getElementById("editorEngine").innerText;
-            const currentMood = document.getElementById("docMood").value;
             const avatarDescription = document.getElementById("avatarConfig").value.trim();
-            
-            if(!rawContent.trim()) return alert("Write some notes first!");
-
+            const integrationStyle = document.getElementById("artIntegrationStyle").value;
+            const currentMood = document.getElementById("docMood").value;
             const img = document.getElementById("comicFrameTarget");
+            
+            if(!rawContent.trim()) return alert("Write down text before generating images.");
             document.getElementById("comicBoard").classList.remove("hidden");
-            img.src = "https://images.squarespace-cdn.com/content/v1/5bde1447a977868019fb0ee7/1559867451375-GR32T0K0S5UVD8B5S7X1/loading-buffering.gif"; // Quick local loading placeholder
+            img.src = "https://images.squarespace-cdn.com/content/v1/5bde1447a977868019fb0ee7/1559867451375-GR32T0K0S5UVD8B5S7X1/loading-buffering.gif";
+
+            let integrationText = "";
+            if(activeAttachedImageBase64 && integrationStyle === "interact") {
+                integrationText = "The character is actively holding, inspecting, or working with an external item matching the text sequence details. ";
+            } else if(activeAttachedImageBase64 && integrationStyle === "background") {
+                integrationText = "An item matching the text details is resting visible in the room background environmental scenery decor layers. ";
+            }
 
             let avatarStr = avatarDescription ? `Recurring character: ${avatarDescription}. ` : "";
-            const finalPrompt = `Sequential 4-panel indie graphic novel layout grid. Black and white comic ink sketch style, sharp ink brush line detail, background scenery backdrop. ${avatarStr}Depicting scene context of mood ${currentMood}: ${rawContent}. No text speech bubbles.`;
+            const finalPrompt = `Sequential 4-panel indie graphic novel comic book page layout cells. High contrast clean crisp black and white ink sketch illustration style. ${avatarStr}${integrationText}Scene story description with mood expression ${currentMood}: ${rawContent}. Absolutely no text lettering or speech bubbles inside the panels.`;
 
             try {
                 const res = await fetch(`${API_BASE}/render-comic`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ username: currentUser, prompt: finalPrompt })
+                    body: JSON.stringify({ username: currentUser, prompt: finalPrompt, image_seed: activeAttachedImageBase64 })
                 });
                 const data = await res.json();
                 if(data.image_data_url) {
                     img.src = data.image_data_url;
                     const doc = findNodeRecursive(vFileSystem, currentFileId);
-                    if(doc) { doc.comic = data.image_data_url; }
+                    if(doc) doc.comic = data.image_data_url;
                     await syncWithServer();
-                } else { alert("Failed to render comic stream."); }
-            } catch(e) { alert("Error passing asset bytes."); }
+                }
+            } catch(e) { alert("Art processing network handshake timed out."); }
         }
 
-        function downloadActiveComicPanel() {
-            const a = document.createElement('a');
-            a.href = document.getElementById("comicFrameTarget").src;
-            a.download = `Panel_${Date.now()}.png`; a.click();
+        function extractAllFilesFromBranch(node) {
+            let collector = []; if(!node) return collector;
+            if(node.type === "file") collector.push(node);
+            if(node.type === "folder" && node.children) {
+                node.children.forEach(child => { collector = collector.concat(extractAllFilesFromBranch(child)); });
+            }
+            return collector;
         }
 
-        function getAllFilesRecursive(nodes) {
-            let files = [];
-            nodes.forEach(node => {
-                if(node.type === "file") files.push(node);
-                else if(node.type === "folder" && node.children) files = files.concat(getAllFilesRecursive(node.children));
-            });
-            return files;
-        }
-
-        function compileMonthlyComicPDF() {
-            const str = prompt("Enter target month context (e.g. '2026'):"); if(!str) return;
-            const files = getAllFilesRecursive(vFileSystem).filter(f => f.created.includes(str) && f.comic);
-            if(files.length === 0) return alert("No operational panels discovered.");
+        function compileSelectedFolderPDF() {
+            const selectedRow = document.getElementById("selectedFolderTarget");
+            if(!selectedRow) return alert("Select a folder in your sidebar tree directory to target it for compilation!");
+            
+            const folderId = selectedRow.parentElement.getAttribute("data-folder-id");
+            const targetedFolderNode = findNodeRecursive(vFileSystem, folderId);
+            const activeComicFiles = extractAllFilesFromBranch(targetedFolderNode).filter(file => file.comic && file.comic !== "");
+            
+            if(activeComicFiles.length === 0) return alert(`No active comic frames found under the targeted folder path: "${targetedFolderNode.name}"`);
 
             const { jsPDF } = window.jspdf; const pdf = new jsPDF('p', 'mm', 'a4');
-            files.forEach((f, i) => {
-                if (i > 0) pdf.addPage();
-                pdf.rect(10, 10, 190, 277); pdf.setFillColor(0,0,0); pdf.rect(10, 10, 190, 15, 'F');
-                pdf.setTextColor(255,255,255); pdf.setFontSize(14); pdf.text(`CHAPTER: ${f.name.toUpperCase()}`, 15, 20);
-                try { pdf.addImage(f.comic, 'PNG', 15, 35, 180, 180); } catch(e) { pdf.text("[Image Array Bound]", 50, 120); }
+            activeComicFiles.forEach((file, index) => {
+                if (index > 0) pdf.addPage();
+                pdf.rect(10, 10, 190, 277); pdf.setFillColor(22, 26, 30); pdf.rect(10, 10, 190, 15, 'F');
+                pdf.setTextColor(255,255,255); pdf.setFontSize(11); 
+                pdf.text(`VOLUME: ${targetedFolderNode.name.toUpperCase()} | NODE REF: ${file.name.toUpperCase()}`, 15, 19);
+                try { 
+                    pdf.addImage(file.comic, 'PNG', 15, 35, 180, 180); 
+                } catch(e) { 
+                    pdf.setTextColor(0,0,0); pdf.text("[Visual Panel Render Node Static Asset Embedded]", 45, 120); 
+                }
             });
-            pdf.save(`Monthly_Comic_Book.pdf`);
+            pdf.save(`Volume_Book_Compilation_${targetedFolderNode.name.replace(/\s+/g, '_')}.pdf`);
         }
+
+        function logout() { location.reload(); }
     </script>
 </body>
 </html>
