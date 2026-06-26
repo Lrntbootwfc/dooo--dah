@@ -50,6 +50,24 @@ def hash_password(password):
     """Securely salts and hashes passwords using SHA-256."""
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
+# Helper to parse data URL safely
+def parse_data_url(data_url):
+    if not data_url:
+        return None
+    try:
+        if "," in data_url:
+            header, encoded = data_url.split(",", 1)
+            mime_type = "image/png"
+            if "mime:" in header:
+                mime_type = header.split(";")[0].replace("data:", "")
+            return {
+                "mimeType": mime_type,
+                "data": encoded
+            }
+    except Exception as e:
+        print(f"Error parsing data URL: {e}")
+    return None
+
 # ─── ROUTE 1: ACCOUNT REGISTRATION / SIGN UP ───
 @app.route("/api/signup", methods=["POST"])
 def register_vault_identity():
@@ -169,6 +187,7 @@ def process_cached_artwork_panel():
     others_desc = data.get("others_desc")
     mood = data.get("mood", "😊")
     content = data.get("content", "")
+    image_seed = data.get("image_seed") # base64 interactive doodle sketch
 
     # Step A: Construct Character guidelines
     char_guidelines = ""
@@ -187,22 +206,46 @@ def process_cached_artwork_panel():
     if api_key and api_key != "MY_GEMINI_API_KEY":
         try:
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+            
+            # Construct system instruction
             instructions = (
                 f"Create a single highly descriptive, compressed visual prompt for an image generator "
                 f"to create a 2D comic panel.\n"
                 f"Character guidelines: \"{char_guidelines}\"\n"
                 f"Mood: \"{mood}\"\n"
-                f"Entry Content: \"{content}\"\n\n"
-                f"Focus purely on visual layout, setting, lighting, character pose, and clean indie comic-book sketch style. "
+                f"Entry Content: \"{content}\"\n"
+            )
+            
+            if image_seed:
+                instructions += "\nAn interactive doodle/canvas sketch is attached. Analyze the user's sketch composition, elements, and shapes, and incorporate its visual layout directly into your refined description."
+
+            instructions += (
+                f"\n\nFocus purely on visual layout, setting, lighting, character pose, and clean indie comic-book sketch style. "
                 f"Keep it compact, rich, and remove all narration. Do not include speech bubbles, text lettering, "
                 f"or markdown formatting. Output ONLY the refined visual prompt text."
             )
+
+            # Build request parts
+            parts = []
+            parsed_image = parse_data_url(image_seed) if image_seed else None
+            
+            if parsed_image:
+                parts.append({
+                    "inlineData": {
+                        "mimeType": parsed_image["mimeType"],
+                        "data": parsed_image["data"]
+                    }
+                })
+            
+            parts.append({"text": instructions})
+            
             payload = {
                 "contents": [{
-                    "parts": [{"text": instructions}]
+                    "parts": parts
                 }]
             }
-            res = requests.post(gemini_url, json=payload, timeout=10)
+            
+            res = requests.post(gemini_url, json=payload, timeout=15)
             if res.status_code == 200:
                 res_data = res.json()
                 try:
@@ -215,7 +258,19 @@ def process_cached_artwork_panel():
             print(f"Gemini prompt refinement skipped/failed: {gemini_err}")
 
     # Build the final art style wrapping prompt
-    final_art_prompt = f"{refined_prompt}. Stylized 2D graphic novel style comic art cell. Clean high-contrast colors, crisp ink outline work. No lettering, no speech bubble balloons."
+    characters_focus = ""
+    char_list = []
+    if avatar_desc:
+        char_list.append(f"Main: {avatar_desc}")
+    if father_desc:
+        char_list.append(f"Father: {father_desc}")
+    if mother_desc:
+        char_list.append(f"Mother: {mother_desc}")
+        
+    if char_list:
+        characters_focus = f"With characters: {', '.join(char_list)}. "
+        
+    final_art_prompt = f"{characters_focus}{refined_prompt}. Stylized 2D graphic novel style comic art cell. Clean high-contrast colors, crisp ink outline work. No lettering, no speech bubble balloons."
     
     # Step C: Fetch image from Pollinations.ai with randomized seed
     rand_seed = random.randint(1, 1000000)
@@ -239,7 +294,10 @@ def process_cached_artwork_panel():
     # Step D: Dynamic Vector SVG Fallback (Bulletproof safeguard)
     safe_mood = mood or "😊"
     safe_content = content[:150] + "..." if content else "Reflective thoughts and core sketches in progress."
-    safe_avatar = avatar_desc or "Minimalist designer"
+    safe_avatar = avatar_desc or "Protagonist"
+    safe_father = father_desc or ""
+    safe_mother = mother_desc or ""
+    safe_others = others_desc or ""
 
     color_themes = {
         "😊": { "bg": "#FFFbeb", "accent": "#F59e0b", "text": "#78350f", "decoration": "☀️ 🌸 ✨" },
@@ -251,6 +309,38 @@ def process_cached_artwork_panel():
     
     theme = color_themes.get(safe_mood, color_themes["default"])
     
+    # Render customized character elements conditionally
+    father_block = f"""
+        <circle cx="35" cy="125" r="20" fill="{theme['accent']}" opacity="0.2" stroke="#000000" stroke-width="1.5" />
+        <text x="35" y="130" font-family="sans-serif" font-weight="bold" font-size="14" text-anchor="middle" fill="#000000">👨</text>
+        <text x="65" y="120" font-family="sans-serif" font-weight="bold" font-size="10" fill="#000000">FATHER</text>
+        <text x="65" y="133" font-family="sans-serif" font-size="8.5" fill="#475569">{safe_father[:24]}...</text>
+    """ if safe_father else f"""
+        <circle cx="35" cy="125" r="20" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="3 3" />
+        <text x="35" y="130" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#94A3B8">?</text>
+        <text x="65" y="128" font-family="sans-serif" font-size="9" fill="#94A3B8" font-style="italic">Father description vacant</text>
+    """
+
+    mother_block = f"""
+        <circle cx="35" cy="180" r="20" fill="{theme['accent']}" opacity="0.2" stroke="#000000" stroke-width="1.5" />
+        <text x="35" y="185" font-family="sans-serif" font-weight="bold" font-size="14" text-anchor="middle" fill="#000000">👩</text>
+        <text x="65" y="175" font-family="sans-serif" font-weight="bold" font-size="10" fill="#000000">MOTHER</text>
+        <text x="65" y="188" font-family="sans-serif" font-size="8.5" fill="#475569">{safe_mother[:24]}...</text>
+    """ if safe_mother else f"""
+        <circle cx="35" cy="180" r="20" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="3 3" />
+        <text x="35" y="185" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#94A3B8">?</text>
+        <text x="65" y="183" font-family="sans-serif" font-size="9" fill="#94A3B8" font-style="italic">Mother description vacant</text>
+    """
+
+    others_block = f"""
+        <line x1="15" y1="150" x2="145" y2="150" stroke="#000000" stroke-width="1.5" />
+        <text x="80" y="168" font-family="sans-serif" font-weight="bold" font-size="9.5" text-anchor="middle" fill="#0F172A">OTHER DETAILS</text>
+        <text x="80" y="185" font-family="sans-serif" font-size="8.5" text-anchor="middle" fill="#475569">{safe_others[:28]}...</text>
+    """ if safe_others else f"""
+        <line x1="15" y1="150" x2="145" y2="150" stroke="#E2E8F0" stroke-width="1" />
+        <text x="80" y="175" font-family="monospace" font-size="8" text-anchor="middle" fill="#94A3B8">VAULT SECURED 🔒</text>
+    """
+
     fallback_svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
     <rect width="500" height="500" fill="#000000" />
     <rect x="15" y="15" width="470" height="470" fill="{theme['bg']}" stroke="#000000" stroke-width="6" rx="10" />
@@ -265,21 +355,34 @@ def process_cached_artwork_panel():
     <line x1="15" y1="280" x2="485" y2="280" stroke="#000000" stroke-width="4" />
     <line x1="250" y1="15" x2="250" y2="280" stroke="#000000" stroke-width="4" />
 
-    <!-- Panel 1: Avatar Profile Frame -->
-    <g transform="translate(40, 40)">
-      <circle cx="70" cy="70" r="45" fill="{theme['accent']}" opacity="0.3" stroke="#000000" stroke-width="2" />
-      <text x="70" y="75" font-family="sans-serif" font-weight="bold" font-size="28" text-anchor="middle" fill="#000000">👤</text>
-      <rect x="10" y="130" width="120" height="24" fill="#000000" rx="4" />
-      <text x="70" y="146" font-family="monospace" font-weight="bold" font-size="10" text-anchor="middle" fill="#FFFFFF">ACTIVE PROFILE</text>
-      <text x="70" y="180" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#475569" font-style="italic">"{safe_avatar[:20]}"</text>
+    <!-- Panel 1: Characters Frame -->
+    <g transform="translate(30, 30)">
+      <rect width="200" height="230" fill="#FFFFFF" stroke="#000000" stroke-width="3" rx="8" />
+      <text x="100" y="24" font-family="sans-serif" font-weight="bold" font-size="11" text-anchor="middle" fill="#000000">CHARACTER ALIGNMENT</text>
+      <line x1="10" y1="32" x2="190" y2="32" stroke="#000000" stroke-width="2" />
+      
+      <!-- Main Avatar -->
+      <circle cx="35" cy="70" r="20" fill="{theme['accent']}" opacity="0.3" stroke="#000000" stroke-width="2" />
+      <text x="35" y="75" font-family="sans-serif" font-weight="bold" font-size="14" text-anchor="middle" fill="#000000">👤</text>
+      <text x="65" y="65" font-family="sans-serif" font-weight="bold" font-size="10" fill="#000000">PROTAGONIST</text>
+      <text x="65" y="78" font-family="sans-serif" font-size="8.5" fill="#475569">{safe_avatar[:24]}...</text>
+
+      <!-- Father -->
+      {father_block}
+
+      <!-- Mother -->
+      {mother_block}
     </g>
 
     <!-- Panel 2: Mood Aura & Weather -->
     <g transform="translate(280, 40)">
-      <rect width="160" height="150" fill="#FFFFFF" stroke="#000000" stroke-width="3" rx="8" />
-      <text x="80" y="65" font-family="sans-serif" font-size="52" text-anchor="middle">{safe_mood}</text>
-      <text x="80" y="105" font-family="sans-serif" font-weight="bold" font-size="18" text-anchor="middle" fill="{theme['text']}"></text>
-      <text x="80" y="130" font-family="sans-serif" font-size="12" text-anchor="middle" fill="#475569">{theme['decoration']}</text>
+      <rect width="160" height="210" fill="#FFFFFF" stroke="#000000" stroke-width="3" rx="8" />
+      <text x="80" y="55" font-family="sans-serif" font-size="48" text-anchor="middle">{safe_mood}</text>
+      <text x="80" y="105" font-family="sans-serif" font-weight="bold" font-size="16" text-anchor="middle" fill="{theme['text']}">MOOD MATRIX</text>
+      <text x="80" y="130" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#475569">{theme['decoration']}</text>
+      
+      <!-- Others -->
+      {others_block}
     </g>
 
     <!-- Panel 3: Journal Visual Snapshot (Large bottom panel) -->
@@ -313,6 +416,7 @@ def process_cached_artwork_panel():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
 
 
 # import os
