@@ -112,6 +112,104 @@ def register_vault_identity():
     finally:
         conn.close()
 
+# ─── ROUTE 1B: OTP REQUEST ───
+otp_store = {}  # In-memory store: { email: otp_code }
+
+@app.route("/api/auth/request-otp", methods=["POST"])
+def request_otp():
+    data = request.json or {}
+    email = data.get("email", "").strip().lower()
+
+    if not email or "@" not in email:
+        return jsonify({"error": "A valid email address is required."}), 400
+
+    otp_code = str(random.randint(100000, 999999))
+    otp_store[email] = otp_code
+
+    # In production, send via email. For dev/sandbox, return it directly.
+    return jsonify({
+        "status": "Success",
+        "message": f"OTP dispatched to {email}",
+        "otp": otp_code  # Dev-mode: frontend will display this as a hint
+    })
+
+
+# ─── ROUTE 1C: OTP VERIFY ───
+@app.route("/api/auth/verify-otp", methods=["POST"])
+def verify_otp():
+    data = request.json or {}
+    email = data.get("email", "").strip().lower()
+    code = data.get("code", "").strip()
+
+    if not email or not code:
+        return jsonify({"error": "Email and OTP code are required."}), 400
+
+    stored = otp_store.get(email)
+    if not stored or stored != code:
+        return jsonify({"error": "Invalid or expired OTP code. Please try again."}), 401
+
+    return jsonify({
+        "status": "Success",
+        "message": "Email verified successfully!"
+    })
+
+
+# ─── ROUTE 1D: REGISTER IDENTITY (POST OTP) ───
+@app.route("/api/auth/register-identity", methods=["POST"])
+def register_identity():
+    data = request.json or {}
+    email = data.get("email", "").strip().lower()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+
+    if not email or not username or not password:
+        return jsonify({"error": "Email, username, and password are all required."}), 400
+
+    # Ensure OTP was verified for this email
+    if email not in otp_store:
+        return jsonify({"error": "Email not OTP-verified. Please restart registration."}), 403
+
+    p_hash = hash_password(password)
+    username_key = username.lower()
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (username_key, p_hash))
+        initial_seed = [
+            {
+                "id": "fold_seed_1", "type": "folder", "name": "Comic Diary Logs 📒",
+                "children": [
+                    {
+                        "id": "file_seed_1", "type": "file", "name": "Inaugural Entry",
+                        "content": "Welcome to my encrypted Comic Diary! Today I am sketching out ideas for our first graphic novel.",
+                        "mood": "😊",
+                        "created": "6/26/2026, 9:00 AM",
+                        "edited": "6/26/2026, 9:00 AM",
+                        "comic": "",
+                        "stickers": []
+                    }
+                ]
+            }
+        ]
+        cursor.execute("INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)", (username_key, json.dumps(initial_seed)))
+        conn.commit()
+
+        # Clear OTP after successful registration
+        otp_store.pop(email, None)
+
+        return jsonify({
+            "status": "Success",
+            "username": username,
+            "avatar_desc": "programmer in minimalist hoodie, sleek glasses",
+            "fs_tree": initial_seed
+        }), 201
+
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Username already taken. Please choose another."}), 409
+    finally:
+        conn.close()
+
 # ─── ROUTE 2: REAL AUTHORIZATION / SIGN IN ───
 @app.route("/api/login", methods=["POST"])
 def verify_vault_access():
