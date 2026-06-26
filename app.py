@@ -4,9 +4,15 @@ import base64
 import sqlite3
 import hashlib
 import random
-import requests
+import requests 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+
+try:
+    from twilio.rest import Client as TwilioClient
+    TWILIO_ENABLED = True
+except ImportError:
+    TWILIO_ENABLED = False
 
 app = Flask(__name__)
 # Enable broad CORS access so your browser HTML file can safely run requests
@@ -18,7 +24,7 @@ COMICS_DIR = os.path.join(STORAGE_DIR, "generated_comics")
 DB_PATH = os.path.join(STORAGE_DIR, "chronicle_vault.db")
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
-os.makedirs(COMICS_DIR, exist_ok=True)
+os.makedirs(COMICS_DIR, exist_ok=True) 
 
 # ─── DATABASE CORE SETUP ───
 def init_db():
