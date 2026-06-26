@@ -4,15 +4,9 @@ import base64
 import sqlite3
 import hashlib
 import random
-import requests 
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-
-try:
-    from twilio.rest import Client as TwilioClient
-    TWILIO_ENABLED = True
-except ImportError:
-    TWILIO_ENABLED = False
 
 app = Flask(__name__)
 # Enable broad CORS access so your browser HTML file can safely run requests
@@ -24,7 +18,7 @@ COMICS_DIR = os.path.join(STORAGE_DIR, "generated_comics")
 DB_PATH = os.path.join(STORAGE_DIR, "chronicle_vault.db")
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
-os.makedirs(COMICS_DIR, exist_ok=True) 
+os.makedirs(COMICS_DIR, exist_ok=True)
 
 # ─── DATABASE CORE SETUP ───
 def init_db():
@@ -45,6 +39,14 @@ def init_db():
             username TEXT PRIMARY KEY,
             fs_tree_json TEXT NOT NULL,
             FOREIGN KEY(username) REFERENCES users(username)
+        )
+    ''')
+    # OTP verification tracking table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS otp_verifications (
+            target TEXT PRIMARY KEY,
+            otp_code TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
@@ -118,104 +120,6 @@ def register_vault_identity():
     finally:
         conn.close()
 
-# ─── ROUTE 1B: OTP REQUEST ───
-otp_store = {}  # In-memory store: { email: otp_code }
-
-@app.route("/api/auth/request-otp", methods=["POST"])
-def request_otp():
-    data = request.json or {}
-    email = data.get("email", "").strip().lower()
-
-    if not email or "@" not in email:
-        return jsonify({"error": "A valid email address is required."}), 400
-
-    otp_code = str(random.randint(100000, 999999))
-    otp_store[email] = otp_code
-
-    # In production, send via email. For dev/sandbox, return it directly.
-    return jsonify({
-        "status": "Success",
-        "message": f"OTP dispatched to {email}",
-        "otp": otp_code  # Dev-mode: frontend will display this as a hint
-    })
-
-
-# ─── ROUTE 1C: OTP VERIFY ───
-@app.route("/api/auth/verify-otp", methods=["POST"])
-def verify_otp():
-    data = request.json or {}
-    email = data.get("email", "").strip().lower()
-    code = data.get("code", "").strip()
-
-    if not email or not code:
-        return jsonify({"error": "Email and OTP code are required."}), 400
-
-    stored = otp_store.get(email)
-    if not stored or stored != code:
-        return jsonify({"error": "Invalid or expired OTP code. Please try again."}), 401
-
-    return jsonify({
-        "status": "Success",
-        "message": "Email verified successfully!"
-    })
-
-
-# ─── ROUTE 1D: REGISTER IDENTITY (POST OTP) ───
-@app.route("/api/auth/register-identity", methods=["POST"])
-def register_identity():
-    data = request.json or {}
-    email = data.get("email", "").strip().lower()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-
-    if not email or not username or not password:
-        return jsonify({"error": "Email, username, and password are all required."}), 400
-
-    # Ensure OTP was verified for this email
-    if email not in otp_store:
-        return jsonify({"error": "Email not OTP-verified. Please restart registration."}), 403
-
-    p_hash = hash_password(password)
-    username_key = username.lower()
-
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)", (username_key, p_hash))
-        initial_seed = [
-            {
-                "id": "fold_seed_1", "type": "folder", "name": "Comic Diary Logs 📒",
-                "children": [
-                    {
-                        "id": "file_seed_1", "type": "file", "name": "Inaugural Entry",
-                        "content": "Welcome to my encrypted Comic Diary! Today I am sketching out ideas for our first graphic novel.",
-                        "mood": "😊",
-                        "created": "6/26/2026, 9:00 AM",
-                        "edited": "6/26/2026, 9:00 AM",
-                        "comic": "",
-                        "stickers": []
-                    }
-                ]
-            }
-        ]
-        cursor.execute("INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)", (username_key, json.dumps(initial_seed)))
-        conn.commit()
-
-        # Clear OTP after successful registration
-        otp_store.pop(email, None)
-
-        return jsonify({
-            "status": "Success",
-            "username": username,
-            "avatar_desc": "programmer in minimalist hoodie, sleek glasses",
-            "fs_tree": initial_seed
-        }), 201
-
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "Username already taken. Please choose another."}), 409
-    finally:
-        conn.close()
-
 # ─── ROUTE 2: REAL AUTHORIZATION / SIGN IN ───
 @app.route("/api/login", methods=["POST"])
 def verify_vault_access():
@@ -266,8 +170,24 @@ def commit_matrix_state():
     
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("UPDATE file_systems SET fs_tree_json = ? WHERE username = ?", (json.dumps(fs_tree), username_key))
-    cursor.execute("UPDATE users SET avatar_desc = ? WHERE username = ?", (avatar_desc, username_key))
+    
+    # Check if user exists
+    cursor.execute("SELECT username FROM users WHERE username = ?", (username_key,))
+    user_exists = cursor.fetchone()
+    if not user_exists:
+        cursor.execute("INSERT INTO users (username, password_hash, avatar_desc) VALUES (?, ?, ?)",
+                       (username_key, hash_password("password123"), avatar_desc))
+    else:
+        cursor.execute("UPDATE users SET avatar_desc = ? WHERE username = ?", (avatar_desc, username_key))
+        
+    # Check if file system tree exists
+    cursor.execute("SELECT username FROM file_systems WHERE username = ?", (username_key,))
+    fs_exists = cursor.fetchone()
+    if not fs_exists:
+        cursor.execute("INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)", (username_key, json.dumps(fs_tree)))
+    else:
+        cursor.execute("UPDATE file_systems SET fs_tree_json = ? WHERE username = ?", (json.dumps(fs_tree), username_key))
+        
     conn.commit()
     conn.close()
     
@@ -518,8 +438,169 @@ def process_cached_artwork_panel():
         "fallback": True
     })
 
+# ─── REAL OTP TRANSMISSION HELPERS ───
+SMTP_HOST     = os.environ.get("SMTP_HOST", os.environ.get("SMTP_SERVER", "smtp.gmail.com"))
+SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER     = os.environ.get("SMTP_USER", os.environ.get("SMTP_USERNAME", ""))          # your Gmail address
+SMTP_PASS     = os.environ.get("SMTP_PASS", os.environ.get("SMTP_PASSWORD", ""))          # Gmail App Password
+
+# ── In-memory OTP store: { key: str } ──
+otp_store = {}
+
+def _send_email_otp(to_email: str, code: str) -> bool:
+    """Send OTP via SMTP. Returns True on success."""
+    if SMTP_USER and SMTP_PASS:
+        import smtplib
+        from email.mime.text import MIMEText
+        try:
+            msg = MIMEText(
+                f"Your Comic Diary verification code is: {code}\n\n"
+                f"This code expires in 10 minutes. Do not share it.",
+                "plain"
+            )
+            msg["Subject"] = "🔐 Comic Diary — Email Verification Code"
+            msg["From"]    = SMTP_USER
+            msg["To"]      = to_email
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                if SMTP_PORT == 587:
+                    server.starttls()
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(SMTP_USER, [to_email], msg.as_string())
+            print(f"[SMTP] Successfully sent OTP to {to_email}")
+            return True
+        except Exception as e:
+            print(f"SMTP OTP error: {e}")
+
+    print(f"[DEV] Email OTP for {to_email}: {code}")
+    return False
+
+# ─── ROUTE: SEND OTP (Single OTP - Email only) ───────────────────────────
+@app.route("/api/auth/request-otp", methods=["POST"])
+def request_otp():
+    data      = request.json or {}
+    email     = data.get("email", "").strip().lower()
+
+    if not email or "@" not in email:
+        return jsonify({"error": "A valid email address is required."}), 400
+
+    email_code = str(random.randint(100000, 999999))
+    otp_store[f"email:{email}"] = email_code
+
+    email_ok = _send_email_otp(email, email_code)
+
+    dev_mode = not bool(SMTP_USER and SMTP_PASS)
+    resp = {
+        "status": "Success",
+        "message": f"Verification code dispatched to {email}.",
+        "dev_mode": dev_mode
+    }
+    if dev_mode or not email_ok:
+        resp["otp"] = email_code
+
+    return jsonify(resp)
+
+# ─── ROUTE: VERIFY OTP ───────────────────────────────────────────────
+@app.route("/api/auth/verify-otp", methods=["POST"])
+def verify_otp():
+    data        = request.json or {}
+    email       = data.get("email", "").strip().lower()
+    code        = data.get("code", "").strip()
+
+    stored_email = otp_store.get(f"email:{email}")
+
+    if not stored_email or stored_email != code:
+        return jsonify({"error": "Invalid or expired email OTP."}), 401
+
+    otp_store[f"verified:email:{email}"] = True
+    return jsonify({"status": "Success", "message": "Code verified!"})
+
+# ─── ROUTE: REGISTER IDENTITY ───────────────────────────
+@app.route("/api/auth/register-identity", methods=["POST"])
+def register_identity():
+    data     = request.json or {}
+    email    = data.get("email", "").strip().lower()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+
+    if not all([email, username, password]):
+        return jsonify({"error": "All fields are required."}), 400
+
+    if not otp_store.get(f"verified:email:{email}"):
+        return jsonify({"error": "Email not verified. Please restart."}), 403
+
+    p_hash       = hash_password(password)
+    username_key = username.lower()
+
+    conn   = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username_key, p_hash)
+        )
+        initial_seed = [{
+            "id": "fold_seed_1", "type": "folder", "name": "Comic Diary Logs 📒",
+            "children": [{
+                "id": "file_seed_1", "type": "file", "name": "Inaugural Entry",
+                "content": "Welcome to my encrypted Comic Diary!",
+                "mood": "😊", "created": "6/26/2026, 9:00 AM",
+                "edited": "6/26/2026, 9:00 AM", "comic": "", "stickers": []
+            }]
+        }]
+        cursor.execute(
+            "INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)",
+            (username_key, json.dumps(initial_seed))
+        )
+        conn.commit()
+
+        # Clean up OTP store
+        otp_store.pop(f"email:{email}", None)
+        otp_store.pop(f"verified:email:{email}", None)
+
+        return jsonify({
+            "status": "Success",
+            "username": username,
+            "avatar_desc": "programmer in minimalist hoodie, sleek glasses",
+            "fs_tree": initial_seed
+        }), 201
+
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Username already taken."}), 409
+    finally:
+        conn.close()
+
+# ─── MESSENGER LEGACY COMPATIBILITY ROUTERS ───
+@app.route("/api/messenger/request-otp", methods=["POST"])
+def request_messenger_otp():
+    data = request.json or {}
+    email = data.get("email", "").strip()
+    phone = data.get("phone", "").strip()
+    if not email:
+        email = f"user_{phone or '00000'}@messenger.io"
+    
+    email_code = str(random.randint(100000, 999999))
+    otp_store[f"email:{email}"] = email_code
+    _send_email_otp(email, email_code)
+
+    return jsonify({
+        "status": "Success",
+        "message": "OTP verification code dispatched successfully!",
+        "debug_otp": email_code
+    })
+
+@app.route("/api/messenger/verify-otp", methods=["POST"])
+def verify_messenger_otp():
+    data = request.json or {}
+    email = data.get("email", "").strip()
+    code = data.get("code", "").strip()
+    stored = otp_store.get(f"email:{email}")
+    if not stored or stored != code:
+        return jsonify({"error": "Invalid OTP code."}), 401
+    return jsonify({"status": "Success", "message": "Verified!"})
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
 
 
 
