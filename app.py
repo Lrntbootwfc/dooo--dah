@@ -24,18 +24,6 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-# 🛡️ Global Exception Handler: Guarantees CORS headers even on 500 errors
-@app.errorhandler(Exception)
-def handle_global_exception(e):
-    print("🔥 GLOBAL EXCEPTION CAUGHT:")
-    traceback.print_exc()
-    response = jsonify({"error": str(e), "message": "Internal Server Error occurred on backend."})
-    response.status_code = 500
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
 # ─── STORAGE SETUP ───
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "vault_storage")
 COMICS_DIR  = os.path.join(STORAGE_DIR, "generated_comics")
@@ -104,13 +92,13 @@ SMTP_HOST = os.environ.get("SMTP_HOST", os.environ.get("SMTP_SERVER", "smtp.gmai
 SMTP_USER = os.environ.get("SMTP_USER", os.environ.get("SMTP_USERNAME", "")).strip()
 SMTP_PASS = os.environ.get("SMTP_PASS", os.environ.get("SMTP_PASSWORD", "")).strip()
 
-# Safely parse port number without crashing
 raw_port = str(os.environ.get("SMTP_PORT", "587")).strip()
 SMTP_PORT = int(raw_port) if raw_port.isdigit() else 587
 
 otp_store: dict = {}
 
-def _send_email_otp(to_email: str, code: str) -> bool:
+def _send_email_otp(to_email: str, code: str) -> tuple[bool, str]:
+    print(f"[DEBUG] Attempting OTP to {to_email} via {SMTP_HOST}:{SMTP_PORT} using user {SMTP_USER}")
     if SMTP_USER and SMTP_PASS:
         try:
             msg = MIMEMultipart("alternative")
@@ -128,23 +116,24 @@ def _send_email_otp(to_email: str, code: str) -> bool:
             </div>
             """
             msg.attach(MIMEText(html_content, "html"))
+
             if SMTP_PORT == 465:
-                with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-                    server.login(SMTP_USER, SMTP_PASS)
-                    server.sendmail(SMTP_USER, [to_email], msg.as_string())
+                server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
             else:
-                with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-                    server.starttls()
-                    server.login(SMTP_USER, SMTP_PASS)
-                    server.sendmail(SMTP_USER, [to_email], msg.as_string())
+                server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+                server.starttls()
+
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, [to_email], msg.as_string())
+            server.quit()
             print(f"[SMTP SUCCESS] Real OTP sent to {to_email}")
-            return True
+            return True, "Email sent successfully"
         except Exception as e:
-            print(f"[SMTP ERROR] Failed sending to {to_email}: {e}")
+            err_msg = f"SMTP Error: {str(e)}"
+            print(f"[SMTP ERROR] {err_msg}")
             traceback.print_exc()
-            return False
-    print(f"[DEV FALLBACK] OTP for {to_email}: {code}")
-    return False
+            return False, err_msg
+    return False, "SMTP_USER or SMTP_PASS not configured"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AUTH ROUTES
@@ -180,20 +169,30 @@ def register_vault_identity():
 
 @app.route("/api/auth/request-otp", methods=["POST"])
 def request_otp():
-    data  = request.get_json(force=True, silent=True) or {}
-    email = data.get("email", "").strip().lower()
-    if not email or "@" not in email:
-        return jsonify({"error": "A valid email is required."}), 400
-    code = str(random.randint(100000, 999999))
-    otp_store[f"email:{email}"] = code
-    email_ok = _send_email_otp(email, code)
-    dev_mode = not bool(SMTP_USER and SMTP_PASS)
-    resp = {"status": "Success",
+    try:
+        data  = request.get_json(force=True, silent=True) or {}
+        email = data.get("email", "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"error": "A valid email is required."}), 400
+        
+        code = str(random.randint(100000, 999999))
+        otp_store[f"email:{email}"] = code
+        email_ok, smtp_detail = _send_email_otp(email, code)
+        
+        dev_mode = not bool(SMTP_USER and SMTP_PASS)
+        resp = {
+            "status": "Success",
             "message": f"Verification code dispatched to {email}.",
-            "dev_mode": dev_mode}
-    if dev_mode or not email_ok:
-        resp["otp"] = code
-    return jsonify(resp)
+            "dev_mode": dev_mode,
+            "smtp_debug": smtp_detail
+        }
+        if dev_mode or not email_ok:
+            resp["otp"] = code
+        return jsonify(resp)
+    except Exception as err:
+        print(f"[REQUEST_OTP ERROR]: {err}")
+        traceback.print_exc()
+        return jsonify({"error": f"Backend Error: {str(err)}"}), 400
 
 @app.route("/api/auth/verify-otp", methods=["POST"])
 def verify_otp():
