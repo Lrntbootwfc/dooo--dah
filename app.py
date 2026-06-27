@@ -432,9 +432,9 @@ def process_cached_artwork_panel():
     characters_focus = f"With characters — {'; '.join(char_list)}. " if char_list else ""
     final_art_prompt = (
         f"{characters_focus}{refined_prompt}. "
-        "Full color vibrant graphic novel comic book page divided into sequential panel grids. "
-        "Featuring highly expressive character facial emotions, dialogue speech bubbles with clear spoken text, "
-        "narrative caption boxes, clean high-contrast ink outlines, and dynamic comic panel layouts."
+        "A full graphic novel comic book page layout divided into a sequential 3-to-4 panel grid telling a complete story flow from beginning to end. "
+        "Every panel features cute, charming, and wholesome characters with endearing facial expressions, visible speech bubbles containing short story dialogue, "
+        "narrative caption boxes, vibrant colors, and clean comic borders. Never horrific, creepy, or dark."
     )
     rand_seed = random.randint(1, 1_000_000)
     api_url   = f"https://image.pollinations.ai/prompt/{requests.utils.quote(final_art_prompt)}?width=512&height=512&nologo=true&seed={rand_seed}"
@@ -468,13 +468,15 @@ def _refine_with_gemini(api_key, base_prompt, char_guidelines, mood, content, im
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
         instructions = (
-            "Create a single highly detailed visual prompt for a multi-panel graphic novel comic page.\n"
+            "You are a comic book scriptwriter. Create a visual prompt for a 3-to-4 panel comic strip page grid that illustrates the entire story flow of the entry text sequentially.\n"
             f"Character guidelines: \"{char_guidelines}\"\n"
             f"Mood: \"{mood}\"\n"
             f"Entry Content: \"{content}\"\n"
             f"Base Prompt: \"{base_prompt}\"\n\n"
-            "Focus on multi-panel comic page grids, intense character facial expressions and emotions, "
-            "story dialogue inside speech bubbles with spoken text, narrative caption boxes, and clean indie graphic novel art style. "
+            "STRICT RULES:\n"
+            "1. MULTI-PANEL FLOW: Describe a full comic page divided into 3 to 4 sequential panels showing the step-by-step narrative progression of the text.\n"
+            "2. DIALOGUE: Include visible speech bubbles with short spoken dialogue and caption boxes in the panels.\n"
+            "3. CUTE AESTHETIC: All characters MUST be cute, endearing, and wholesome with charming expressions (NEVER horrific, dark, or scary).\n"
             "Output ONLY the refined visual prompt text."
         )
         parts = []
