@@ -432,7 +432,9 @@ def process_cached_artwork_panel():
     characters_focus = f"With characters — {'; '.join(char_list)}. " if char_list else ""
     final_art_prompt = (
         f"{characters_focus}{refined_prompt}. "
-        "Stylized 2D graphic novel comic art cell. Clean high-contrast colors, crisp ink outline work."
+        "Full color vibrant graphic novel comic book page divided into sequential panel grids. "
+        "Featuring highly expressive character facial emotions, dialogue speech bubbles with clear spoken text, "
+        "narrative caption boxes, clean high-contrast ink outlines, and dynamic comic panel layouts."
     )
     rand_seed = random.randint(1, 1_000_000)
     api_url   = f"https://image.pollinations.ai/prompt/{requests.utils.quote(final_art_prompt)}?width=512&height=512&nologo=true&seed={rand_seed}"
@@ -465,7 +467,16 @@ def _build_char_guidelines(avatar_desc, global_alignments, entry_characters):
 def _refine_with_gemini(api_key, base_prompt, char_guidelines, mood, content, image_seed):
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-        instructions = f"Create a single visual prompt for a comic panel.\nCharacter guidelines: \"{char_guidelines}\"\nMood: \"{mood}\"\nEntry Content: \"{content}\"\nBase Prompt: \"{base_prompt}\"\n"
+        instructions = (
+            "Create a single highly detailed visual prompt for a multi-panel graphic novel comic page.\n"
+            f"Character guidelines: \"{char_guidelines}\"\n"
+            f"Mood: \"{mood}\"\n"
+            f"Entry Content: \"{content}\"\n"
+            f"Base Prompt: \"{base_prompt}\"\n\n"
+            "Focus on multi-panel comic page grids, intense character facial expressions and emotions, "
+            "story dialogue inside speech bubbles with spoken text, narrative caption boxes, and clean indie graphic novel art style. "
+            "Output ONLY the refined visual prompt text."
+        )
         parts = []
         parsed_img = parse_data_url(image_seed) if image_seed else None
         if parsed_img:
