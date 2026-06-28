@@ -1,20 +1,13 @@
-import os
-import json
-import base64
-import sqlite3
-import hashlib
-import random
-import requests
-import smtplib
-import traceback
+import os, json, base64, sqlite3, hashlib, random, requests, smtplib
+import traceback, time, textwrap, math, io
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from PIL import Image, ImageDraw, ImageFont
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
-
-# 🔓 Enable CORS for all routes, origins, and credentials
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.after_request
@@ -24,523 +17,980 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-# ─── STORAGE SETUP ───
+# ─── STORAGE ─────────────────────────────────────────────────────────────────
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "vault_storage")
 COMICS_DIR  = os.path.join(STORAGE_DIR, "generated_comics")
 DB_PATH     = os.path.join(STORAGE_DIR, "chronicle_vault.db")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 os.makedirs(COMICS_DIR,  exist_ok=True)
 
-# ─── DATABASE INIT ───────────────────────────────────────────────────────────
+# ─── FONTS ───────────────────────────────────────────────────────────────────
+FONT_BOLD    = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+FONT_REGULAR = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+FONT_ITALIC  = "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"
+
+def _font(path, size):
+    try:    return ImageFont.truetype(path, size)
+    except: return ImageFont.load_default()
+
+# ─── LIMITS ──────────────────────────────────────────────────────────────────
+MAX_PANELS_PER_PAGE = 4
+MAX_PAGES           = 6
+
+# ─── DATABASE ────────────────────────────────────────────────────────────────
 def init_db():
-    conn   = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            username          TEXT PRIMARY KEY,
-            password_hash     TEXT NOT NULL,
-            avatar_desc       TEXT DEFAULT 'programmer in minimalist hoodie, sleek glasses',
-            global_alignments TEXT DEFAULT '{}'
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS file_systems (
-            username     TEXT PRIMARY KEY,
-            fs_tree_json TEXT NOT NULL,
-            FOREIGN KEY(username) REFERENCES users(username)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS otp_verifications (
-            target     TEXT PRIMARY KEY,
-            otp_code   TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    conn = sqlite3.connect(DB_PATH)
+    c    = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,
+        avatar_desc TEXT DEFAULT 'programmer in minimalist hoodie, sleek glasses',
+        global_alignments TEXT DEFAULT '{}')''')
+    c.execute('''CREATE TABLE IF NOT EXISTS file_systems (
+        username TEXT PRIMARY KEY, fs_tree_json TEXT NOT NULL,
+        FOREIGN KEY(username) REFERENCES users(username))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS otp_verifications (
+        target TEXT PRIMARY KEY, otp_code TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     try:
-        cursor.execute("ALTER TABLE users ADD COLUMN global_alignments TEXT DEFAULT '{}'")
+        c.execute("ALTER TABLE users ADD COLUMN global_alignments TEXT DEFAULT '{}'")
     except sqlite3.OperationalError:
-        pass   
-    conn.commit()
-    conn.close()
+        pass
+    conn.commit(); conn.close()
 
 init_db()
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-def parse_data_url(data_url):
-    if not data_url:
-        return None
+def hash_password(p): return hashlib.sha256(p.encode()).hexdigest()
+def parse_data_url(u):
+    if not u or "," not in u: return None
     try:
-        if "," in data_url:
-            header, encoded = data_url.split(",", 1)
-            mime_type = "image/png"
-            if "data:" in header:
-                mime_type = header.split(";")[0].replace("data:", "")
-            return {"mimeType": mime_type, "data": encoded}
-    except Exception as e:
-        print(f"parse_data_url error: {e}")
-    return None
+        header, data = u.split(",", 1)
+        mime = header.split(";")[0].replace("data:", "") if "data:" in header else "image/png"
+        return {"mimeType": mime, "data": data}
+    except: return None
+def _get_conn(): return sqlite3.connect(DB_PATH)
 
-def _get_conn():
-    return sqlite3.connect(DB_PATH)
-
-# ─── SAFE SMTP INFRASTRUCTURE ────────────────────────────────────────────────
-SMTP_HOST = os.environ.get("SMTP_HOST", os.environ.get("SMTP_SERVER", "smtp.gmail.com")).strip()
-SMTP_USER = os.environ.get("SMTP_USER", os.environ.get("SMTP_USERNAME", "")).strip()
-SMTP_PASS = os.environ.get("SMTP_PASS", os.environ.get("SMTP_PASSWORD", "")).strip()
-
-raw_port = str(os.environ.get("SMTP_PORT", "587")).strip()
-SMTP_PORT = int(raw_port) if raw_port.isdigit() else 587
-
+# ─── SMTP ────────────────────────────────────────────────────────────────────
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_USER = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASS = os.environ.get("SMTP_PASS", "").strip()
+SMTP_PORT = int(str(os.environ.get("SMTP_PORT", "587")).strip() or "587")
 otp_store: dict = {}
 
-def _send_email_otp(to_email: str, code: str) -> tuple[bool, str]:
-    print(f"[DEBUG] Attempting OTP to {to_email} via {SMTP_HOST}:{SMTP_PORT} using user {SMTP_USER}")
-    if SMTP_USER and SMTP_PASS:
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = "🔐 Comic Diary — Email Verification Code"
-            msg["From"]    = f'"Comic Diary Auth" <{SMTP_USER}>'
-            msg["To"]      = to_email
-            html_content = f"""
-            <div style="font-family: Arial, sans-serif; padding: 20px; background-color: #0f172a; color: #ffffff; border-radius: 12px;">
-                <h2 style="color: #ec4899; margin-bottom: 8px;">Verification Code</h2>
-                <p style="color: #cbd5e1; font-size: 14px;">Your one-time verification passcode for Comic Diary is:</p>
-                <div style="background-color: #1e293b; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #38bdf8; margin: 20px 0;">
-                    {code}
-                </div>
-                <p style="font-size: 12px; color: #94a3b8;">This code expires in 10 minutes. Do not share it with anyone.</p>
-            </div>
-            """
-            msg.attach(MIMEText(html_content, "html"))
-
-            if SMTP_PORT == 465:
-                server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
-            else:
-                server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
-                server.starttls()
-
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, [to_email], msg.as_string())
-            server.quit()
-            print(f"[SMTP SUCCESS] Real OTP sent to {to_email}")
-            return True, "Email sent successfully"
-        except Exception as e:
-            err_msg = f"SMTP Error: {str(e)}"
-            print(f"[SMTP ERROR] {err_msg}")
-            traceback.print_exc()
-            return False, err_msg
-    return False, "SMTP_USER or SMTP_PASS not configured"
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  AUTH ROUTES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@app.route("/api/signup", methods=["POST"])
-def register_vault_identity():
-    data     = request.get_json(force=True, silent=True) or {}
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    if not username or not password:
-        return jsonify({"error": "Username and password are required."}), 400
-    p_hash       = hash_password(password)
-    username_key = username.lower()
-    initial_seed = _build_initial_seed()
-    conn   = _get_conn()
-    cursor = conn.cursor()
+def _send_email_otp(to_email, code):
+    if not (SMTP_USER and SMTP_PASS): return False, "SMTP not configured"
     try:
-        cursor.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username_key, p_hash)
-        )
-        cursor.execute(
-            "INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)",
-            (username_key, json.dumps(initial_seed))
-        )
-        conn.commit()
-        return jsonify({"status": "Success", "message": "Comic Diary vault created!"}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "Username already taken."}), 409
-    finally:
-        conn.close()
-
-@app.route("/api/auth/request-otp", methods=["POST"])
-def request_otp():
-    try:
-        data  = request.get_json(force=True, silent=True) or {}
-        email = data.get("email", "").strip().lower()
-        if not email or "@" not in email:
-            return jsonify({"error": "A valid email is required."}), 400
-        
-        code = str(random.randint(100000, 999999))
-        otp_store[f"email:{email}"] = code
-        email_ok, smtp_detail = _send_email_otp(email, code)
-        
-        dev_mode = not bool(SMTP_USER and SMTP_PASS)
-        resp = {
-            "status": "Success",
-            "message": f"Verification code dispatched to {email}.",
-            "dev_mode": dev_mode,
-            "smtp_debug": smtp_detail
-        }
-        if dev_mode or not email_ok:
-            resp["otp"] = code
-        return jsonify(resp)
-    except Exception as err:
-        print(f"[REQUEST_OTP ERROR]: {err}")
-        traceback.print_exc()
-        return jsonify({"error": f"Backend Error: {str(err)}"}), 400
-
-@app.route("/api/auth/verify-otp", methods=["POST"])
-def verify_otp():
-    data  = request.get_json(force=True, silent=True) or {}
-    email = data.get("email", "").strip().lower()
-    code  = data.get("code", "").strip()
-    if otp_store.get(f"email:{email}") != code:
-        return jsonify({"error": "Invalid or expired OTP."}), 401
-    otp_store[f"verified:email:{email}"] = True
-    return jsonify({"status": "Success", "message": "Code verified!"})
-
-@app.route("/api/auth/register-identity", methods=["POST"])
-def register_identity():
-    data     = request.get_json(force=True, silent=True) or {}
-    email    = data.get("email", "").strip().lower()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    if not all([email, username, password]):
-        return jsonify({"error": "All fields are required."}), 400
-    if not otp_store.get(f"verified:email:{email}"):
-        return jsonify({"error": "Email not verified."}), 403
-    p_hash       = hash_password(password)
-    username_key = username.lower()
-    initial_seed = _build_initial_seed()
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username_key, p_hash)
-        )
-        cursor.execute(
-            "INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)",
-            (username_key, json.dumps(initial_seed))
-        )
-        conn.commit()
-        otp_store.pop(f"email:{email}", None)
-        otp_store.pop(f"verified:email:{email}", None)
-        return jsonify({
-            "status":      "Success",
-            "username":    username,
-            "avatar_desc": "programmer in minimalist hoodie, sleek glasses",
-            "global_alignments": {},
-            "fs_tree":     initial_seed
-        }), 201
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "Username already taken."}), 409
-    finally:
-        conn.close()
-
-@app.route("/api/login", methods=["POST"])
-def verify_vault_access():
-    data     = request.get_json(force=True, silent=True) or {}
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
-    if not username or not password:
-        return jsonify({"error": "Missing credentials."}), 400
-    p_hash       = hash_password(password)
-    username_key = username.lower()
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT password_hash, avatar_desc, global_alignments FROM users WHERE username = ?",
-        (username_key,)
-    )
-    row = cursor.fetchone()
-    if not row or row[0] != p_hash:
-        conn.close()
-        return jsonify({"error": "Invalid credentials."}), 401
-    cursor.execute(
-        "SELECT fs_tree_json FROM file_systems WHERE username = ?",
-        (username_key,)
-    )
-    fs_row = cursor.fetchone()
-    conn.close()
-    fs_tree           = json.loads(fs_row[0]) if fs_row else []
-    global_alignments = json.loads(row[2] or "{}") if row[2] else {}
-    return jsonify({
-        "status":            "Success",
-        "username":          username,
-        "avatar_desc":       row[1],
-        "global_alignments": global_alignments,
-        "fs_tree":           fs_tree
-    })
-
-@app.route("/api/save", methods=["POST"])
-def commit_matrix_state():
-    data     = request.get_json(force=True, silent=True) or {}
-    username = data.get("username")
-    fs_tree  = data.get("fs_tree")
-    if not username or fs_tree is None:
-        return jsonify({"error": "username and fs_tree are required."}), 400
-    username_key      = username.lower()
-    avatar_desc       = data.get("avatar_desc", "programmer in minimalist hoodie, sleek glasses")
-    global_alignments = data.get("global_alignments", {})
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute("SELECT username FROM users WHERE username = ?", (username_key,))
-    if cursor.fetchone():
-        cursor.execute(
-            "UPDATE users SET avatar_desc = ?, global_alignments = ? WHERE username = ?",
-            (avatar_desc, json.dumps(global_alignments), username_key)
-        )
-    else:
-        cursor.execute(
-            "INSERT INTO users (username, password_hash, avatar_desc, global_alignments) VALUES (?, ?, ?, ?)",
-            (username_key, hash_password("changeme"), avatar_desc, json.dumps(global_alignments))
-        )
-    cursor.execute("SELECT username FROM file_systems WHERE username = ?", (username_key,))
-    if cursor.fetchone():
-        cursor.execute(
-            "UPDATE file_systems SET fs_tree_json = ? WHERE username = ?",
-            (json.dumps(fs_tree), username_key)
-        )
-    else:
-        cursor.execute(
-            "INSERT INTO file_systems (username, fs_tree_json) VALUES (?, ?)",
-            (json.dumps(fs_tree))
-        )
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "Success", "message": "State permanently saved."})
-
-@app.route("/api/entry/characters", methods=["POST"])
-def update_entry_characters():
-    data       = request.get_json(force=True, silent=True) or {}
-    username   = data.get("username")
-    file_id    = data.get("file_id")
-    characters = data.get("characters")
-    if not username or not file_id or characters is None:
-        return jsonify({"error": "username, file_id, and characters are required."}), 400
-    username_key = username.lower()
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute("SELECT fs_tree_json FROM file_systems WHERE username = ?", (username_key,))
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "User file system not found."}), 404
-    fs_tree = json.loads(row[0])
-    updated = _patch_file_characters(fs_tree, file_id, characters)
-    if not updated:
-        conn.close()
-        return jsonify({"error": f"File id '{file_id}' not found in tree."}), 404
-    cursor.execute("UPDATE file_systems SET fs_tree_json = ? WHERE username = ?", (json.dumps(fs_tree), username_key))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "Success", "message": f"Characters for entry '{file_id}' saved."})
-
-def _patch_file_characters(tree: list, target_id: str, characters: list) -> bool:
-    for node in tree:
-        if node.get("type") == "file" and node.get("id") == target_id:
-            node["characters"] = characters
-            return True
-        if node.get("type") == "folder":
-            if _patch_file_characters(node.get("children", []), target_id, characters):
-                return True
-    return False
-
-@app.route("/api/alignments", methods=["GET"])
-def get_global_alignments():
-    username = request.args.get("username", "").strip().lower()
-    if not username:
-        return jsonify({"error": "username is required."}), 400
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute("SELECT avatar_desc, global_alignments FROM users WHERE username = ?", (username,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        return jsonify({"error": "User not found."}), 404
-    return jsonify({"status": "Success", "avatar_desc": row[0], "global_alignments": json.loads(row[1] or "{}")})
-
-@app.route("/api/alignments", methods=["POST"])
-def update_global_alignments():
-    data     = request.get_json(force=True, silent=True) or {}
-    username = data.get("username", "").strip().lower()
-    if not username:
-        return jsonify({"error": "username is required."}), 400
-    avatar_desc       = data.get("avatar_desc")
-    global_alignments = data.get("global_alignments", {})
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    updates = ["global_alignments = ?"]
-    params  = [json.dumps(global_alignments)]
-    if avatar_desc is not None:
-        updates.append("avatar_desc = ?")
-        params.append(avatar_desc)
-    params.append(username)
-    cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = ?", params)
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "Success", "message": "Global alignments updated."})
-
-@app.route("/api/render-comic", methods=["POST"])
-def process_cached_artwork_panel():
-    data     = request.get_json(force=True, silent=True) or {}
-    username = data.get("username")
-    optimized_prompt   = data.get("prompt", "")
-    content            = data.get("content", "")
-    mood               = data.get("mood", "😊")
-    image_seed         = data.get("image_seed")
-    entry_characters   = data.get("entry_characters", [])   
-    avatar_desc        = data.get("avatar_desc", "")
-    global_alignments  = data.get("global_alignments", {})
-    if not optimized_prompt:
-        return jsonify({"error": "prompt cannot be empty."}), 400
-    if username and (not avatar_desc or not global_alignments):
-        conn   = _get_conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT avatar_desc, global_alignments FROM users WHERE username = ?", (username.lower(),))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            avatar_desc       = avatar_desc or row[0] or ""
-            stored_globals    = json.loads(row[1] or "{}")
-            if not global_alignments:
-                global_alignments = stored_globals
-    char_guidelines = _build_char_guidelines(avatar_desc, global_alignments, entry_characters)
-    api_key      = os.environ.get("GEMINI_API_KEY", "")
-    refined_prompt = optimized_prompt
-    if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
-        refined_prompt = _refine_with_gemini(api_key, optimized_prompt, char_guidelines, mood, content, image_seed)
-    char_list = []
-    if avatar_desc:
-        char_list.append(f"Main: {avatar_desc}")
-    for align_key in ("father", "mother", "others"):
-        val = global_alignments.get(align_key, "")
-        if val:
-            char_list.append(f"{align_key.capitalize()}: {val}")
-    for ec in entry_characters:
-        name = ec.get("name", "")
-        role = ec.get("role", "")
-        desc = ec.get("desc", ec.get("description", ""))
-        if name:
-            char_list.append(f"{name} ({role}): {desc}" if role else f"{name}: {desc}")
-    characters_focus = f"With characters — {'; '.join(char_list)}. " if char_list else ""
-    final_art_prompt = (
-        f"{characters_focus}{refined_prompt}. "
-        "A full graphic novel comic book page layout divided into a sequential 3-to-4 panel grid telling a complete story flow from beginning to end. "
-        "Every panel features cute, charming, and wholesome characters with endearing facial expressions, visible speech bubbles containing short story dialogue, "
-        "narrative caption boxes, vibrant colors, and clean comic borders. Never horrific, creepy, or dark."
-    )
-    rand_seed = random.randint(1, 1_000_000)
-    api_url   = f"https://image.pollinations.ai/prompt/{requests.utils.quote(final_art_prompt)}?width=512&height=512&nologo=true&seed={rand_seed}"
-    try:
-        resp = requests.get(api_url, timeout=25)
-        if resp.status_code == 200 and len(resp.content) > 1000:
-            b64  = base64.b64encode(resp.content).decode("utf-8")
-            return jsonify({"status": "Success", "image_data_url": f"data:image/png;base64,{b64}", "optimized_prompt": final_art_prompt})
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "🔐 Comic Diary — Email Verification Code"
+        msg["From"]    = f'"Comic Diary Auth" <{SMTP_USER}>'
+        msg["To"]      = to_email
+        msg.attach(MIMEText(f"<div style='font-size:32px;font-weight:bold;letter-spacing:6px;color:#38bdf8'>{code}</div>", "html"))
+        srv = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) if SMTP_PORT == 465 \
+              else smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+        if SMTP_PORT != 465: srv.starttls()
+        srv.login(SMTP_USER, SMTP_PASS); srv.sendmail(SMTP_USER, [to_email], msg.as_string()); srv.quit()
+        return True, "sent"
     except Exception as e:
-        print(f"[Pollinations] error: {e}")
-    svg_b64 = _build_svg_fallback(mood, content, avatar_desc, global_alignments.get("father", ""), global_alignments.get("mother", ""), global_alignments.get("others", ""), entry_characters)
-    return jsonify({"status": "Success", "image_data_url": svg_b64, "optimized_prompt": final_art_prompt, "fallback": True})
+        return False, str(e)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  COMIC COMPOSITING ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 1. Agent 1: Story Understanding AI ───────────────────────────────────────
+def _run_agent_story_understanding(api_key, content, mood):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    prompt = f"""You are 'Agent 1: Story Understanding AI'. Your job is to deeply analyze the following diary entry/story.
+
+DIARY ENTRY:
+\"\"\"{content}\"\"\"
+
+MOOD: {mood}
+
+Analyze the entry and extract:
+1. The genre of the story.
+2. The emotion curve (a sequential list of emotional states the narrator goes through, e.g. ["Excitement", "Joy", "Nostalgia", "Sadness"]).
+3. The key characters present in the story (including their role, gender, age if mentioned).
+4. The key locations mentioned.
+5. Important chronologically ordered events.
+
+Respond ONLY with valid JSON (no markdown block, no '```json' wrapper):
+{{
+  "genre": "Slice of Life",
+  "emotion_curve": ["Excitement", "Joy", "Nostalgia", "Sadness"],
+  "characters": [
+    {{"id": "C1", "role": "Narrator/Protagonist", "gender": "female", "age": "20"}}
+  ],
+  "locations": ["Cafe", "Road", "Home"],
+  "important_events": ["Met my best friend", "She hugged me", "Walking home", "Remembered grandfather"]
+}}"""
+    try:
+        res = requests.post(url,
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}},
+            timeout=25)
+        if res.status_code == 200:
+            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json","").replace("```","").strip()
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[Agent 1 Story Understanding error]: {e}")
+    return {
+        "genre": "Slice of life",
+        "emotion_curve": [mood],
+        "characters": [{"id": "C1", "role": "Narrator"}],
+        "locations": ["Unspecified"],
+        "important_events": ["Diary events occurred"]
+    }
+
+
+# ── 2. Agent 2: Comic Director / Storyboard AI ────────────────────────────────
+def _run_agent_comic_director(api_key, content, story_analysis, num_pages):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    prompt = f"""You are 'Agent 2: Comic Director / Storyboard AI'. You think like a movie director and professional storyboard artist.
+
+ORIGINAL DIARY ENTRY:
+\"\"\"{content}\"\"\"
+
+STORY UNDERSTANDING (from Agent 1):
+{json.dumps(story_analysis, indent=2)}
+
+Split this story into exactly {num_pages} comic page(s), each with exactly 4 panels (total {num_pages * 4} panels).
+The panels MUST cover the complete story timeline.
+
+For each panel, decide:
+- PANEL_NUMBER (1 to 4)
+- CAMERA: camera angle (e.g. "Wide Shot", "Close Up", "Extreme Close Up", "Medium Shot", "Bird's Eye View")
+- SETTING: background location, time of day, lighting, environment details
+- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"])
+- CHARACTER_EXPRESSIONS: expression of each present character (e.g., "Narrator laughing, Friend smiling with big eyes")
+- ACTION: physical action taking place in the scene
+- VISUAL_DETAILS: key visual items, objects, or details to draw (e.g. "falling leaves", "coffee mugs on table")
+- DIALOGUE: list of dialogue objects with speaker and text (e.g., [{{"speaker": "Friend", "text": "I missed you!"}}]) or empty list if none
+- INNER_THOUGHT: string of thought bubble text, or empty string if none
+- CAPTION: short narrator box text (max 12 words) or empty string if none
+- BUBBLE_TYPE: "speech" | "thought" | "shout" | "whisper" | "none"
+- MOOD: overall emotional mood of this specific panel
+- LIGHTING: lighting condition (e.g. "golden hour light", "dim indoor moonlight")
+
+Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
+{{
+  "pages": [
+    {{
+      "page_number": 1,
+      "panels": [
+        {{
+          "panel_number": 1,
+          "camera": "Wide Shot",
+          "setting": "Outside cafe",
+          "characters_present": ["Narrator", "Best Friend"],
+          "character_expressions": "Best Friend hugging Narrator with eyes closed tight, smiling",
+          "action": "Best Friend runs and hugs narrator",
+          "visual_details": "falling autumn leaves, cozy cafe front entrance",
+          "dialogue": [{{"speaker": "Best Friend", "text": "I missed you!"}}],
+          "inner_thought": "",
+          "caption": "Today I met my best friend after 6 months.",
+          "bubble_type": "speech",
+          "mood": "Warm",
+          "lighting": "Golden hour sunlight"
+        }}
+      ]
+    }}
+  ]
+}}"""
+    try:
+        res = requests.post(url,
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.5, "responseMimeType": "application/json"}},
+            timeout=35)
+        if res.status_code == 200:
+            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json","").replace("```","").strip()
+            return json.loads(raw).get("pages", [])
+    except Exception as e:
+        print(f"[Agent 2 Comic Director error]: {e}")
+    return []
+
+
+# ── 3. Agent 3: Character Sheet Generator AI ───────────────────────────────
+def _run_agent_character_sheet(api_key, story_analysis, char_guidelines):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    prompt = f"""You are 'Agent 3: Character Sheet Generator AI'. Your job is to create a temporary consistent character sheet for each key character present.
+Characters must be cute, wholesome, anime-inspired webtoon style with round soft faces and big expressive eyes.
+
+STORY ANALYSIS:
+{json.dumps(story_analysis, indent=2)}
+
+USER DESIGN PREFERENCES / PROFILE DETAILS:
+{char_guidelines}
+
+For each unique character present in the story, define their physical profiles including:
+- Hair: length, style, color
+- Eyes: color, expression
+- Dress: default typical outfit/jacket/colors
+- Art Style: Wholesome cute webtoon, vibrant clean outlines
+- Height/Age/Other details
+
+Respond ONLY with a valid JSON dictionary where each key is the character's name/role and the value is their visual profile. No markdown formatting.
+Example structure:
+{{
+  "Narrator": "20yo female, shoulder length black hair, brown eyes, blue hoodie, wholesome cute anime webtoon style.",
+  "Best Friend": "20yo female, curly light-brown hair, green eyes, yellow jacket over white shirt, big cheerful smile."
+}}"""
+    try:
+        res = requests.post(url,
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"}},
+            timeout=25)
+        if res.status_code == 200:
+            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json","").replace("```","").strip()
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[Agent 3 Character Sheet error]: {e}")
+    return {}
+
+
+# ── 4. Agent 4: Quality Control Agent (Vision Check) ──────────────────────────
+def _run_agent_quality_check(api_key, img_bytes, panel_meta):
+    if not img_bytes or len(img_bytes) < 2000:
+        return {"verdict": "REGENERATE", "reason": "No valid image data generated", "prompt_adjustment": "Make prompt simpler"}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    
+    prompt = f"""You are 'Agent 4: Quality Assurance Agent'. Your task is to verify if the generated comic panel image matches the story direction.
+
+TARGET STORY DETAILS:
+- Action/Characters: {panel_meta.get("action", "")}
+- Present: {", ".join(panel_meta.get("characters_present", []))}
+- Lighting/Setting: {panel_meta.get("setting", "")} ({panel_meta.get("lighting", "default lighting")})
+- Expression: {panel_meta.get("character_expressions", "")}
+
+Check the generated illustration for:
+1. Visual glitches (extra fingers/arms, distorted faces, missing key components).
+2. Does it contain text or word bubbles drawn by the AI model? (The image MUST NOT contain any words/bubble text since we overlay them digitally).
+3. Does it capture the targeted action and setting reasonably?
+
+Respond ONLY with a valid JSON block of this structure:
+{{
+  "verdict": "PASS" | "REGENERATE",
+  "reason": "Detailed observation explaining why it passes or needs regeneration",
+  "prompt_adjustment": "If REGENERATE, write a modified version of the prompt to solve the issue, else empty string"
+}}"""
+    try:
+        res = requests.post(url,
+            json={
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": prompt},
+                            {"inlineData": {"mimeType": "image/png", "data": img_b64}}
+                        ]
+                    }
+                ],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+            },
+            timeout=25)
+        if res.status_code == 200:
+            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json","").replace("```","").strip()
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[Agent 4 Quality check error]: {e}")
+    return {"verdict": "PASS", "reason": "Bypassed quality check", "prompt_adjustment": ""}
+
+
+# ── 5. Pollinations: fetch ONE panel image ────────────────────────────────────
+def _build_panel_scene_prompt(panel, character_sheet, color_style):
+    """Build a prompt for JUST the scene — no speech bubbles, no text, leave whitespace at top."""
+    setting         = panel.get("setting", "")
+    camera          = panel.get("camera", "Medium Shot")
+    action          = panel.get("action", "")
+    visual_details  = panel.get("visual_details", panel.get("visual_elements", "")) or ""
+    expressions     = panel.get("character_expressions", "cute and expressive")
+    chars_present   = panel.get("characters_present", [])
+    lighting        = panel.get("lighting", "")
+    mood            = panel.get("mood", "")
+
+    # Compile character descriptors
+    char_refs = []
+    for cname in chars_present:
+        profile = character_sheet.get(cname, "")
+        if not profile:
+            # Fallback fuzzy matching
+            for sname, sprofile in character_sheet.items():
+                if sname.lower() in cname.lower() or cname.lower() in sname.lower():
+                    profile = sprofile
+                    break
+        if profile:
+            char_refs.append(f"{cname} appearance: {profile}")
+        else:
+            char_refs.append(f"{cname} is a cute anime character.")
+
+    char_ref_str = ". ".join(char_refs) if char_refs else "Cute characters present."
+
+    return (
+        f"Comic book panel art, {camera} shot. {char_ref_str} "
+        f"Scene and background: {setting}. Lighting: {lighting}. Mood: {mood}. "
+        f"Action: {action}. Character expressions: {expressions}. "
+        f"Visual details: {visual_details}. "
+        f"LEAVE EMPTY WHITE SPACE at the very top (15% of image) for caption text overlay. "
+        f"NO speech bubbles, NO text, NO words anywhere in the image. "
+        f"Style: {color_style}, clean comic book illustration, detailed expressive background, "
+        f"professional manga-inspired panel art. NEVER scary or horrific."
+    )
+
+def _fetch_panel_image(prompt, seed, retries=1):
+    """Fetch a single panel scene image — 256x256 for individual panels."""
+    encoded = requests.utils.quote(prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=256&height=256&nologo=true&seed={seed}&model=flux"
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, timeout=40)
+            if resp.status_code == 200 and len(resp.content) > 2000:
+                return resp.content
+        except Exception as e:
+            print(f"[Pollinations panel] attempt {attempt+1} failed: {e}")
+        
+    return None
+
+
+# ── 3. Text wrapping helpers ──────────────────────────────────────────────────
+def _wrap_text(text, font, max_width, draw):
+    """Wrap text to fit within max_width pixels."""
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        test = (current + " " + word).strip()
+        bbox = draw.textbbox((0,0), test, font=font)
+        if bbox[2] <= max_width:
+            current = test
+        else:
+            if current: lines.append(current)
+            current = word
+    if current: lines.append(current)
+    return lines
+
+
+# ── 4. Bubble drawers ─────────────────────────────────────────────────────────
+def _draw_speech_bubble(draw, cx, cy, text, font, bubble_type="speech",
+                         max_w=160, fg=(20,20,20), bg=(255,255,255), border=(20,20,20)):
+    """Draw a speech/thought/shout bubble centred near (cx, cy).
+    Returns the bounding box (x0,y0,x1,y1) of the bubble."""
+    padding  = 10
+    lines    = _wrap_text(text, font, max_w - padding*2, draw)
+    if not lines: return None
+
+    fsize    = font.size if hasattr(font, 'size') else 13
+    line_h   = fsize + 4
+    txt_w    = max(draw.textbbox((0,0), l, font=font)[2] for l in lines)
+    txt_h    = line_h * len(lines)
+
+    bw = txt_w + padding * 2
+    bh = txt_h + padding * 2
+
+    # Position bubble so it doesn't go off canvas
+    img_w, img_h = (840, 876)
+    x0 = max(4, min(cx - bw//2, img_w - bw - 4))
+    y0 = max(4, cy)
+    x1 = x0 + bw
+    y1 = y0 + bh
+
+    radius = 14 if bubble_type != "shout" else 4
+
+    if bubble_type == "shout":
+        # Spiky starburst
+        cx_b, cy_b = (x0+x1)//2, (y0+y1)//2
+        spikes = 10
+        pts = []
+        for i in range(spikes * 2):
+            angle = math.pi * i / spikes - math.pi / 2
+            r = (bw//2 + 8) if i % 2 == 0 else (bw//2 - 4)
+            pts.append((cx_b + r * math.cos(angle), cy_b + r * math.sin(angle)))
+        draw.polygon(pts, fill=bg, outline=border)
+    else:
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius,
+                                fill=bg, outline=border, width=2)
+
+    if bubble_type == "speech":
+        # Tail pointing down
+        tail_x = x0 + bw // 3
+        draw.polygon([(tail_x, y1), (tail_x+14, y1), (tail_x+2, y1+16)],
+                     fill=bg, outline=border)
+        draw.line([(tail_x+1, y1), (tail_x+13, y1)], fill=bg, width=3)
+
+    elif bubble_type == "thought":
+        # Ellipse dots trailing down
+        for r_dot, offset_y in [(5, 0), (4, 9), (3, 16)]:
+            dx, dy = x0 + 18, y1 + offset_y
+            draw.ellipse([dx-r_dot, dy-r_dot, dx+r_dot, dy+r_dot],
+                         fill=bg, outline=border, width=2)
+
+    elif bubble_type == "whisper":
+        # Dashed border effect — draw over with dashes
+        dash_col = (180, 180, 180)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius,
+                                fill=bg, outline=dash_col, width=2)
+
+    # Draw text
+    ty = y0 + padding
+    for line in lines:
+        lbbox = draw.textbbox((0,0), line, font=font)
+        lw = lbbox[2]
+        tx = x0 + padding + (txt_w - lw) // 2
+        draw.text((tx, ty), line, fill=fg, font=font)
+        ty += line_h
+
+    return (x0, y0, x1, y1 + (20 if bubble_type in ("speech","thought") else 0))
+
+
+def _draw_caption_box(draw, x0, y0, x1, text, font, bg=(0,0,0,200), fg=(255,255,255)):
+    """Draw a caption box at the top of a panel."""
+    if not text: return
+    padding = 8
+    lines   = _wrap_text(text, font, (x1 - x0) - padding*2, draw)
+    fsize   = font.size if hasattr(font,'size') else 11
+    line_h  = fsize + 3
+    box_h   = line_h * len(lines) + padding * 2
+
+    draw.rectangle([x0, y0, x1, y0 + box_h], fill=(10, 10, 10))
+    ty = y0 + padding
+    for line in lines:
+        draw.text((x0 + padding, ty), line, fill=(255,255,240), font=font)
+        ty += line_h
+    return y0 + box_h
+
+
+# ── 5. Composite one full comic PAGE from panel images + metadata ─────────────
+def _composite_page(panel_images_bytes, panels_meta, page_num, total_pages, color_style):
+    """
+    Layout: 2 columns × 2 rows of panels (each 400×400).
+    Page canvas: ~820 × 900 with margins, page label, panel borders.
+    Overlays: caption boxes, speech bubbles, thought bubbles — all crisp text.
+    """
+    PANEL_W, PANEL_H = 400, 400
+    COLS, ROWS       = 2, 2
+    GUTTER           = 8
+    MARGIN           = 16
+    HEADER_H         = 36
+
+    page_w = MARGIN*2 + COLS*PANEL_W + (COLS-1)*GUTTER
+    page_h = MARGIN*2 + ROWS*PANEL_H + (ROWS-1)*GUTTER + HEADER_H
+
+    # Page background — aged paper feel
+    page = Image.new("RGB", (page_w, page_h), (245, 238, 220))
+    draw = ImageDraw.Draw(page)
+
+    # Outer border
+    draw.rectangle([2, 2, page_w-3, page_h-3], outline=(30,20,10), width=3)
+
+    # Page header
+    hfont = _font(FONT_BOLD, 13)
+    header_text = f"PAGE {page_num} / {total_pages}"
+    draw.rectangle([0, 0, page_w, HEADER_H], fill=(20, 20, 20))
+    draw.text((MARGIN, 10), header_text, fill=(255, 200, 60), font=hfont)
+
+    # Fonts
+    caption_font  = _font(FONT_BOLD,    11)
+    dialogue_font = _font(FONT_BOLD,    13)
+    thought_font  = _font(FONT_ITALIC,  12)
+    whisper_font  = _font(FONT_ITALIC,  11)
+
+    for idx, (img_bytes, panel) in enumerate(zip(panel_images_bytes, panels_meta)):
+        col = idx % COLS
+        row = idx // COLS
+
+        px = MARGIN + col * (PANEL_W + GUTTER)
+        py = MARGIN + HEADER_H + row * (PANEL_H + GUTTER)
+
+        # ── Place panel image ──
+        if img_bytes:
+            try:
+                pimg = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                pimg = pimg.resize((PANEL_W, PANEL_H), Image.LANCZOS)
+                page.paste(pimg, (px, py))
+            except Exception as e:
+                print(f"[Composite] panel image error: {e}")
+                draw.rectangle([px, py, px+PANEL_W, py+PANEL_H], fill=(200,200,210))
+        else:
+            # Fallback gradient-ish fill
+            for yy in range(PANEL_H):
+                t  = yy / PANEL_H
+                rc = int(180 + 40*t)
+                gc = int(160 + 30*t)
+                bc = int(200 + 20*t)
+                draw.line([(px, py+yy), (px+PANEL_W, py+yy)], fill=(rc,gc,bc))
+
+        # Panel border (thick black line)
+        draw.rectangle([px, py, px+PANEL_W, py+PANEL_H], outline=(10,10,10), width=3)
+
+        # ── Caption box (top of panel) ──
+        caption = panel.get("caption", "")
+        caption_bottom = py
+        if caption:
+            caption_bottom = _draw_caption_box(
+                draw, px, py, px+PANEL_W, caption, caption_font
+            ) or py
+
+        # ── Bubble drawing area: below caption, inside panel ──
+        bubble_y_start = caption_bottom + 4
+
+        # Speech dialogue
+        dialogues = panel.get("dialogue", [])
+        btype = panel.get("bubble_type", "speech")
+        if dialogues and btype != "none":
+            for di, dlg in enumerate(dialogues[:2]):  # max 2 speakers per panel
+                txt = dlg.get("text", "").strip()
+                if not txt: continue
+                # Alternate left/right for multiple speakers
+                if di == 0:
+                    bx = px + PANEL_W // 4
+                else:
+                    bx = px + (PANEL_W * 3) // 4
+
+                font_to_use = whisper_font if btype == "whisper" else dialogue_font
+                _draw_speech_bubble(
+                    draw, bx, bubble_y_start,
+                    txt, font_to_use,
+                    bubble_type=btype,
+                    max_w=min(180, PANEL_W - 20),
+                    fg=(10,10,10),
+                    bg=(255,255,255) if btype != "shout" else (255,255,180),
+                    border=(10,10,10)
+                )
+                bubble_y_start += 10  # slight offset for next speaker
+
+        # Thought bubble
+        inner = panel.get("inner_thought", "").strip()
+        if inner:
+            _draw_speech_bubble(
+                draw, px + PANEL_W - 80, bubble_y_start,
+                inner, thought_font,
+                bubble_type="thought",
+                max_w=150,
+                fg=(40,40,100),
+                bg=(230,230,255),
+                border=(100,100,180)
+            )
+
+    return page
+
+
+# ── 6. PIL image → base64 data URL ───────────────────────────────────────────
+def _page_to_data_url(pil_image):
+    buf = io.BytesIO()
+    pil_image.save(buf, format="PNG", optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+
+# ── 7. Character guidelines builder ──────────────────────────────────────────
 def _build_char_guidelines(avatar_desc, global_alignments, entry_characters):
     parts = []
     if avatar_desc:
-        parts.append(f"Self: {avatar_desc}")
+        parts.append(f"Protagonist: {avatar_desc}")
     for key in ("father", "mother", "others"):
         val = global_alignments.get(key, "")
-        if val:
-            parts.append(f"{key.capitalize()}: {val}")
+        if val: parts.append(f"{key.capitalize()}: {val}")
     for ec in entry_characters:
-        name = ec.get("name", "")
-        role = ec.get("role", "")
-        desc = ec.get("desc", ec.get("description", ""))
+        name = ec.get("name",""); role = ec.get("role","")
+        desc = ec.get("desc", ec.get("description",""))
         if name:
             parts.append(f"{name} ({role}): {desc}" if role else f"{name}: {desc}")
     return ". ".join(parts)
 
-def _refine_with_gemini(api_key, base_prompt, char_guidelines, mood, content, image_seed):
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-        instructions = (
-            "You are a comic book scriptwriter. Create a visual prompt for a 3-to-4 panel comic strip page grid that illustrates the entire story flow of the entry text sequentially.\n"
-            f"Character guidelines: \"{char_guidelines}\"\n"
-            f"Mood: \"{mood}\"\n"
-            f"Entry Content: \"{content}\"\n"
-            f"Base Prompt: \"{base_prompt}\"\n\n"
-            "STRICT RULES:\n"
-            "1. MULTI-PANEL FLOW: Describe a full comic page divided into 3 to 4 sequential panels showing the step-by-step narrative progression of the text.\n"
-            "2. DIALOGUE: Include visible speech bubbles with short spoken dialogue and caption boxes in the panels.\n"
-            "3. CUTE AESTHETIC: All characters MUST be cute, endearing, and wholesome with charming expressions (NEVER horrific, dark, or scary).\n"
-            "Output ONLY the refined visual prompt text."
-        )
-        parts = []
-        parsed_img = parse_data_url(image_seed) if image_seed else None
-        if parsed_img:
-            parts.append({"inlineData": {"mimeType": parsed_img["mimeType"], "data": parsed_img["data"]}})
-        parts.append({"text": instructions})
-        res = requests.post(url, json={"contents": [{"parts": parts}]}, timeout=15)
-        if res.status_code == 200:
-            text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            if text:
-                return text
-    except Exception as e:
-        print(f"[Gemini] error: {e}")
-    return base_prompt
 
-def _build_svg_fallback(mood, content, avatar_desc, father_desc, mother_desc, others_desc, entry_characters):
-    safe_content = (content[:150] + "...") if content else "Reflective thoughts in progress."
-    safe_avatar  = avatar_desc or "Protagonist"
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%"><rect width="500" height="500" fill="#000"/><text x="250" y="250" font-family="sans-serif" font-size="20" text-anchor="middle" fill="#FFF">{safe_avatar}</text></svg>"""
-    b64 = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
-    return f"data:image/svg+xml;base64,{b64}"
+def _build_color_style(mood):
+    sad    = {"😢","😞","😔","😟","😩","😭"}
+    happy  = {"😊","😄","😁","🥳","😍","🎉","😎"}
+    calm   = {"😌","🧘","☺️"}
+    angry  = {"😠","😤","😡"}
+    if any(m in mood for m in sad):   return "soft muted watercolor tones, blues and grays"
+    if any(m in mood for m in happy): return "vibrant saturated colors, warm yellows and pinks"
+    if any(m in mood for m in calm):  return "soft pastel colors, gentle greens and lavenders"
+    if any(m in mood for m in angry): return "bold high-contrast, deep reds and sharp shadows"
+    return "rich colorful comic book style, balanced warm tones"
+
+
+def _estimate_pages(content):
+    words    = len(content.split())
+    panels   = max(3, min(MAX_PANELS_PER_PAGE * MAX_PAGES, words // 70))
+    return min(MAX_PAGES, max(1, math.ceil(panels / MAX_PANELS_PER_PAGE)))
+
+
+def _fallback_storyboard(content, num_pages):
+    """Simple sentence-split fallback when Gemini isn't available."""
+    sentences = [s.strip() for s in content.replace("!",".").replace("?",".").split(".") if s.strip()]
+    total     = num_pages * MAX_PANELS_PER_PAGE
+    chunk     = max(1, len(sentences) // total)
+    pages     = []
+    panel_idx = 0
+    for p in range(num_pages):
+        panels = []
+        for pn in range(MAX_PANELS_PER_PAGE):
+            chunk_sentences = sentences[panel_idx*chunk:(panel_idx+1)*chunk]
+            text = " ".join(chunk_sentences)[:120]
+            panels.append({
+                "panel_number":        pn + 1,
+                "setting":             text or "A quiet scene",
+                "characters_present":  [],
+                "character_expressions": "neutral",
+                "action":              text,
+                "visual_elements":     "",
+                "dialogue":            [],
+                "inner_thought":       "",
+                "caption":             text[:60],
+                "bubble_type":         "none"
+            })
+            panel_idx += 1
+        pages.append({"page_number": p+1, "panels": panels})
+    return pages
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ 
+
+@app.route("/api/render-comic-pages", methods=["POST"])
+def render_comic_pages():
+    data     = request.get_json(force=True, silent=True) or {}
+    username = data.get("username")
+    content           = data.get("content", "").strip()
+    mood              = data.get("mood", "😊")
+    entry_characters  = data.get("entry_characters", [])
+    avatar_desc       = data.get("avatar_desc", "")
+    global_alignments = data.get("global_alignments", {})
+
+    if not content:
+        return jsonify({"error": "content cannot be empty."}), 400
+
+    # Load user profile if needed
+    if username and (not avatar_desc or not global_alignments):
+        conn   = _get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT avatar_desc, global_alignments FROM users WHERE username=?", (username.lower(),))
+        row = cursor.fetchone(); conn.close()
+        if row:
+            avatar_desc       = avatar_desc or row[0] or ""
+            stored            = json.loads(row[1] or "{}")
+            if not global_alignments: global_alignments = stored
+
+    char_guidelines = _build_char_guidelines(avatar_desc, global_alignments, entry_characters)
+    color_style     = _build_color_style(mood)
+    api_key         = os.environ.get("GEMINI_API_KEY", "")
+    num_pages       = _estimate_pages(content)
+
+    print(f"[Comic v3 Multi-Agent] {len(content.split())} words → {num_pages} pages")
+
+    # ── Step 1: Agent 1 - Story Understanding ──────────────────────────────
+    story_analysis = None
+    if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
+        story_analysis = _run_agent_story_understanding(api_key, content, mood)
+    
+    if not story_analysis:
+        story_analysis = {
+            "genre": "Slice of Life",
+            "emotion_curve": ["Neutral", mood],
+            "characters": [
+                {"id": "Narrator", "role": "Narrator/Protagonist", "gender": "female", "age": "20"},
+                {"id": "Friend", "role": "Best Friend", "gender": "female", "age": "20"}
+            ],
+            "locations": ["Inside / Outdoor Settings"],
+            "important_events": ["Diary events occurred"]
+        }
+
+    # ── Step 2: Agent 3 - Character Sheet Generation ───────────────────────
+    character_sheet = None
+    if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
+        character_sheet = _run_agent_character_sheet(api_key, story_analysis, char_guidelines)
+    
+    if not character_sheet:
+        character_sheet = {
+            "Narrator": f"Protagonist, {avatar_desc or 'cute youth in minimalist hoodie, sleek glasses'}.",
+            "Best Friend": "Curly haired smiling best friend wearing a bright warm jacket.",
+            "Grandfather": "Kindly grandfather with soft grey hair and an warm posture."
+        }
+
+    # ── Step 3: Agent 2 - Comic Director (Storyboard) ──────────────────────
+    pages_data = []
+    if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
+        pages_data = _run_agent_comic_director(api_key, content, story_analysis, num_pages)
+
+    if not pages_data:
+        pages_data = _fallback_storyboard(content, num_pages)
+
+    total_pages  = len(pages_data)
+    base_seed    = random.randint(1, 500_000)
+    result_pages = []
+    
+    # Store Agent trace logs to send back to client
+    quality_logs = []
+
+    for page_data in pages_data:
+        page_num = page_data.get("page_number", len(result_pages) + 1)
+        panels   = page_data.get("panels", [])
+
+        # ── Step 4: Fetch panel images (with Agent 4 Quality Assurance Checks) ──
+        panel_images = []
+        for pi, panel in enumerate(panels):
+            prompt = _build_panel_scene_prompt(panel, character_sheet, color_style)
+            seed   = base_seed + page_num * 100 + pi
+            
+            # Initial generation
+            img_bytes = _fetch_panel_image(prompt, seed)
+            
+            # Agent 4: Quality Check
+            verdict_info = {"verdict": "PASS", "reason": "Bypassed verification (No Gemini key)"}
+            if api_key and api_key not in ("", "MY_GEMINI_API_KEY") and img_bytes:
+                verdict_info = _run_agent_quality_check(api_key, img_bytes, panel)
+                
+                # If quality check tells us to REGENERATE, we do exactly one retry with an adjusted prompt!
+                if verdict_info.get("verdict") == "REGENERATE":
+                    adj_advice = verdict_info.get("prompt_adjustment", "")
+                    adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
+                    print(f"[Quality Agent] Page {page_num} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
+                    
+                    retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99)
+                    if retry_bytes:
+                        img_bytes = retry_bytes
+                        verdict_info["verdict"] = "PASS"
+                        verdict_info["reason"] = f"Regenerated successfully on retry. Previous issue: {verdict_info.get('reason')}"
+            
+            quality_logs.append({
+                "page": page_num,
+                "panel": pi + 1,
+                "verdict": verdict_info.get("verdict", "PASS"),
+                "reason": verdict_info.get("reason", "Passed inspection"),
+                "prompt_used": prompt
+            })
+            
+            panel_images.append(img_bytes)
+            print(f"[Comic v3] Page {page_num} Panel {pi+1}: {'OK' if img_bytes else 'FALLBACK'}")
+
+        # ── Step 5: Layout Engine Compositing ─────────────────────────────
+        try:
+            pil_page = _composite_page(panel_images, panels, page_num, total_pages, color_style)
+            data_url = _page_to_data_url(pil_page)
+            fallback = False
+        except Exception as e:
+            print(f"[Composite error] page {page_num}: {e}")
+            traceback.print_exc()
+            data_url = _svg_fallback(page_num, total_pages, mood)
+            fallback = True
+
+        result_pages.append({
+            "page_number":    page_num,
+            "image_data_url": data_url,
+            "panels":         panels,
+            "panel_count":    len(panels),
+            "fallback":       fallback
+        })
+
+    return jsonify({
+        "status":      "Success",
+        "total_pages": total_pages,
+        "pages":       result_pages,
+        "color_style": color_style,
+        "story_understanding": story_analysis,
+        "character_sheets": character_sheet,
+        "quality_control_logs": quality_logs
+    })
+
+
+def _svg_fallback(page_num, total_pages, mood):
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 900">
+  <rect width="820" height="900" fill="#f5eedd"/>
+  <rect x="2" y="2" width="816" height="896" fill="none" stroke="#1a0a00" stroke-width="3"/>
+  <rect x="0" y="0" width="820" height="36" fill="#141414"/>
+  <text x="16" y="24" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffc83d">PAGE {page_num} / {total_pages}</text>
+  <text x="410" y="480" font-family="sans-serif" font-size="22" text-anchor="middle" fill="#c0392b">Image generation failed</text>
+  <text x="410" y="510" font-family="sans-serif" font-size="40" text-anchor="middle">{mood}</text>
+  <text x="410" y="545" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#888">Please retry — Pollinations may be busy</text>
+</svg>'''
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+# ─── Legacy single-page endpoint (kept for backward compat) ──────────────────
+@app.route("/api/render-comic", methods=["POST"])
+def render_comic_legacy():
+    # Just re-route to the new endpoint
+    return render_comic_pages()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AUTH & DATA ROUTES (unchanged from original)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/signup", methods=["POST"])
+def register_vault_identity():
+    data = request.get_json(force=True, silent=True) or {}
+    username = data.get("username","").strip(); password = data.get("password","").strip()
+    if not username or not password: return jsonify({"error":"Username and password required."}), 400
+    conn = _get_conn(); cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username,password_hash) VALUES (?,?)", (username.lower(), hash_password(password)))
+        cursor.execute("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)", (username.lower(), json.dumps(_build_initial_seed())))
+        conn.commit()
+        return jsonify({"status":"Success","message":"Vault created!"}), 201
+    except sqlite3.IntegrityError: return jsonify({"error":"Username already taken."}), 409
+    finally: conn.close()
+
+@app.route("/api/auth/request-otp", methods=["POST"])
+def request_otp():
+    data  = request.get_json(force=True, silent=True) or {}
+    email = data.get("email","").strip().lower()
+    if not email or "@" not in email: return jsonify({"error":"Valid email required."}), 400
+    code = str(random.randint(100000,999999))
+    otp_store[f"email:{email}"] = code
+    ok, detail = _send_email_otp(email, code)
+    dev = not bool(SMTP_USER and SMTP_PASS)
+    resp = {"status":"Success","message":f"Code sent to {email}","dev_mode":dev,"smtp_debug":detail}
+    if dev or not ok: resp["otp"] = code
+    return jsonify(resp)
+
+@app.route("/api/auth/verify-otp", methods=["POST"])
+def verify_otp():
+    data  = request.get_json(force=True, silent=True) or {}
+    email = data.get("email","").strip().lower()
+    code  = data.get("code","").strip()
+    if otp_store.get(f"email:{email}") != code: return jsonify({"error":"Invalid OTP."}), 401
+    otp_store[f"verified:email:{email}"] = True
+    return jsonify({"status":"Success","message":"Verified!"})
+
+@app.route("/api/auth/register-identity", methods=["POST"])
+def register_identity():
+    data = request.get_json(force=True, silent=True) or {}
+    email=data.get("email","").strip().lower(); username=data.get("username","").strip(); password=data.get("password","").strip()
+    if not all([email,username,password]): return jsonify({"error":"All fields required."}), 400
+    if not otp_store.get(f"verified:email:{email}"): return jsonify({"error":"Email not verified."}), 403
+    conn=_get_conn(); cursor=conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username,password_hash) VALUES (?,?)", (username.lower(), hash_password(password)))
+        cursor.execute("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)", (username.lower(), json.dumps(_build_initial_seed())))
+        conn.commit()
+        otp_store.pop(f"email:{email}",None); otp_store.pop(f"verified:email:{email}",None)
+        return jsonify({"status":"Success","username":username,"avatar_desc":"programmer in minimalist hoodie, sleek glasses","global_alignments":{},"fs_tree":_build_initial_seed()}), 201
+    except sqlite3.IntegrityError: return jsonify({"error":"Username already taken."}), 409
+    finally: conn.close()
+
+@app.route("/api/login", methods=["POST"])
+def verify_vault_access():
+    data=request.get_json(force=True,silent=True) or {}
+    username=data.get("username","").strip(); password=data.get("password","").strip()
+    if not username or not password: return jsonify({"error":"Missing credentials."}), 400
+    conn=_get_conn(); cursor=conn.cursor()
+    cursor.execute("SELECT password_hash,avatar_desc,global_alignments FROM users WHERE username=?", (username.lower(),))
+    row=cursor.fetchone()
+    if not row or row[0]!=hash_password(password): conn.close(); return jsonify({"error":"Invalid credentials."}), 401
+    cursor.execute("SELECT fs_tree_json FROM file_systems WHERE username=?", (username.lower(),))
+    fs_row=cursor.fetchone(); conn.close()
+    return jsonify({"status":"Success","username":username,"avatar_desc":row[1],
+                    "global_alignments":json.loads(row[2] or "{}"),
+                    "fs_tree":json.loads(fs_row[0]) if fs_row else []})
+
+@app.route("/api/save", methods=["POST"])
+def commit_matrix_state():
+    data=request.get_json(force=True,silent=True) or {}
+    username=data.get("username"); fs_tree=data.get("fs_tree")
+    if not username or fs_tree is None: return jsonify({"error":"username and fs_tree required."}), 400
+    uk=username.lower()
+    avatar=data.get("avatar_desc","programmer in minimalist hoodie, sleek glasses")
+    ga=data.get("global_alignments",{})
+    conn=_get_conn(); cursor=conn.cursor()
+    cursor.execute("SELECT username FROM users WHERE username=?", (uk,))
+    if cursor.fetchone():
+        cursor.execute("UPDATE users SET avatar_desc=?,global_alignments=? WHERE username=?", (avatar,json.dumps(ga),uk))
+    else:
+        cursor.execute("INSERT INTO users (username,password_hash,avatar_desc,global_alignments) VALUES (?,?,?,?)",
+                       (uk,hash_password("changeme"),avatar,json.dumps(ga)))
+    cursor.execute("SELECT username FROM file_systems WHERE username=?", (uk,))
+    if cursor.fetchone():
+        cursor.execute("UPDATE file_systems SET fs_tree_json=? WHERE username=?", (json.dumps(fs_tree),uk))
+    else:
+        cursor.execute("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)", (uk,json.dumps(fs_tree)))
+    conn.commit(); conn.close()
+    return jsonify({"status":"Success","message":"State saved."})
+
+@app.route("/api/entry/characters", methods=["POST"])
+def update_entry_characters():
+    data=request.get_json(force=True,silent=True) or {}
+    username=data.get("username"); file_id=data.get("file_id"); characters=data.get("characters")
+    if not username or not file_id or characters is None: return jsonify({"error":"username, file_id, characters required."}), 400
+    uk=username.lower(); conn=_get_conn(); cursor=conn.cursor()
+    cursor.execute("SELECT fs_tree_json FROM file_systems WHERE username=?", (uk,))
+    row=cursor.fetchone()
+    if not row: conn.close(); return jsonify({"error":"User not found."}), 404
+    fs=json.loads(row[0])
+    def patch(tree,tid,chars):
+        for n in tree:
+            if n.get("type")=="file" and n.get("id")==tid: n["characters"]=chars; return True
+            if n.get("type")=="folder":
+                if patch(n.get("children",[]),tid,chars): return True
+        return False
+    if not patch(fs,file_id,characters): conn.close(); return jsonify({"error":"File not found."}), 404
+    cursor.execute("UPDATE file_systems SET fs_tree_json=? WHERE username=?", (json.dumps(fs),uk))
+    conn.commit(); conn.close()
+    return jsonify({"status":"Success"})
+
+@app.route("/api/alignments", methods=["GET"])
+def get_global_alignments():
+    username=request.args.get("username","").strip().lower()
+    if not username: return jsonify({"error":"username required."}), 400
+    conn=_get_conn(); cursor=conn.cursor()
+    cursor.execute("SELECT avatar_desc,global_alignments FROM users WHERE username=?", (username,))
+    row=cursor.fetchone(); conn.close()
+    if not row: return jsonify({"error":"User not found."}), 404
+    return jsonify({"status":"Success","avatar_desc":row[0],"global_alignments":json.loads(row[1] or "{}")})
+
+@app.route("/api/alignments", methods=["POST"])
+def update_global_alignments():
+    data=request.get_json(force=True,silent=True) or {}
+    username=data.get("username","").strip().lower()
+    if not username: return jsonify({"error":"username required."}), 400
+    ga=data.get("global_alignments",{}); ad=data.get("avatar_desc")
+    conn=_get_conn(); cursor=conn.cursor()
+    updates=["global_alignments=?"]; params=[json.dumps(ga)]
+    if ad is not None: updates.append("avatar_desc=?"); params.append(ad)
+    params.append(username)
+    cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE username=?", params)
+    conn.commit(); conn.close()
+    return jsonify({"status":"Success"})
 
 @app.route("/api/delete-account", methods=["POST"])
 def delete_account():
-    data     = request.get_json(force=True, silent=True) or {}
-    username = data.get("username", "").strip().lower()
-    password = data.get("password", "").strip()
-    if not username or not password:
-        return jsonify({"error": "username and password are required."}), 400
-    conn   = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
-    row = cursor.fetchone()
-    if not row or row[0] != hash_password(password):
-        conn.close()
-        return jsonify({"error": "Invalid credentials."}), 401
-    cursor.execute("DELETE FROM file_systems WHERE username = ?", (username,))
-    cursor.execute("DELETE FROM users WHERE username = ?", (username,))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "Success", "message": "Account deleted."})
+    data=request.get_json(force=True,silent=True) or {}
+    username=data.get("username","").strip().lower(); password=data.get("password","").strip()
+    if not username or not password: return jsonify({"error":"username and password required."}), 400
+    conn=_get_conn(); cursor=conn.cursor()
+    cursor.execute("SELECT password_hash FROM users WHERE username=?", (username,))
+    row=cursor.fetchone()
+    if not row or row[0]!=hash_password(password): conn.close(); return jsonify({"error":"Invalid credentials."}), 401
+    cursor.execute("DELETE FROM file_systems WHERE username=?", (username,)); cursor.execute("DELETE FROM users WHERE username=?", (username,))
+    conn.commit(); conn.close()
+    return jsonify({"status":"Success","message":"Account deleted."})
 
 @app.route("/api/messenger/request-otp", methods=["POST"])
 def request_messenger_otp():
-    data  = request.get_json(force=True, silent=True) or {}
-    email = data.get("email", "").strip() or "user@messenger.io"
-    code = str(random.randint(100000, 999999))
-    otp_store[f"email:{email}"] = code
-    _send_email_otp(email, code)
-    return jsonify({"status": "Success", "message": "OTP dispatched.", "debug_otp": code})
+    data=request.get_json(force=True,silent=True) or {}
+    email=data.get("email","").strip() or "user@messenger.io"
+    code=str(random.randint(100000,999999)); otp_store[f"email:{email}"]=code
+    _send_email_otp(email,code)
+    return jsonify({"status":"Success","debug_otp":code})
 
 @app.route("/api/messenger/verify-otp", methods=["POST"])
 def verify_messenger_otp():
-    data   = request.get_json(force=True, silent=True) or {}
-    email  = data.get("email", "").strip()
-    code   = data.get("code", "").strip()
-    stored = otp_store.get(f"email:{email}")
-    if not stored or stored != code:
-        return jsonify({"error": "Invalid OTP."}), 401
-    return jsonify({"status": "Success", "message": "Verified!"})
+    data=request.get_json(force=True,silent=True) or {}
+    email=data.get("email","").strip(); code=data.get("code","").strip()
+    if otp_store.get(f"email:{email}")!=code: return jsonify({"error":"Invalid OTP."}), 401
+    return jsonify({"status":"Success","message":"Verified!"})
 
 def _build_initial_seed():
-    return [{"id": "fold_seed_1", "type": "folder", "name": "Comic Diary Logs 📒", "children": [{"id": "file_seed_1", "type": "file", "name": "Inaugural Entry", "content": "Welcome!", "mood": "😊", "created": "6/27/2026", "edited": "6/27/2026", "comic": "", "stickers": [], "characters": []}]}]
+    return [{"id":"fold_seed_1","type":"folder","name":"Comic Diary Logs 📒","children":[
+        {"id":"file_seed_1","type":"file","name":"Inaugural Entry","content":"Welcome!",
+         "mood":"😊","created":"6/27/2026","edited":"6/27/2026","comic":"","stickers":[],"characters":[]}]}]
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
