@@ -17,6 +17,32 @@ def after_request(response):
     response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
     return response
 
+@app.errorhandler(Exception)
+def handle_global_exception(e):
+    # Log the full exception with traceback
+    tb = traceback.format_exc()
+    print(f"[UNHANDLED EXCEPTION IN FLASK]:\n{tb}")
+    
+    # Check if this is a standard HTTP error from Flask
+    if hasattr(e, "code") and hasattr(e, "name"):
+        status_code = e.code
+        error_msg = getattr(e, "description", e.name)
+    else:
+        status_code = 500
+        error_msg = str(e) or "Internal Server Error"
+        
+    response = jsonify({
+        "status": "Error",
+        "error": error_msg,
+        "type": e.__class__.__name__,
+        "traceback": tb.split("\n")
+    })
+    response.status_code = status_code
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return response
+
 # ─── STORAGE ─────────────────────────────────────────────────────────────────
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "vault_storage")
 COMICS_DIR  = os.path.join(STORAGE_DIR, "generated_comics")
@@ -67,7 +93,7 @@ def parse_data_url(u):
         mime = header.split(";")[0].replace("data:", "") if "data:" in header else "image/png"
         return {"mimeType": mime, "data": data}
     except: return None
-def _get_conn(): return sqlite3.connect(DB_PATH)
+def _get_conn(): return sqlite3.connect(DB_PATH, timeout=30.0)
 
 # ─── SMTP ────────────────────────────────────────────────────────────────────
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
