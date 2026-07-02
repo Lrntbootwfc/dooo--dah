@@ -145,215 +145,51 @@ Respond ONLY with valid JSON (no markdown block, no '```json' wrapper):
 
 
 # ── 2. Agent 2: Comic Director / Storyboard AI ────────────────────────────────
-def _run_agent_comic_director(api_key, content, story_analysis, num_pages):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    prompt = f"""You are 'Agent 2: Comic Director / Storyboard AI'. You think like a movie director and professional storyboard artist.
-
-ORIGINAL DIARY ENTRY:
-\"\"\"{content}\"\"\"
-
-STORY UNDERSTANDING (from Agent 1):
-{json.dumps(story_analysis, indent=2)}
-
-Split this story into exactly {num_pages} comic page(s), each with exactly 4 panels (total {num_pages * 4} panels).
-The panels MUST cover the complete story timeline.
-
-For each panel, decide:
-- PANEL_NUMBER (1 to 4)
-- CAMERA: camera angle (e.g. "Wide Shot", "Close Up", "Extreme Close Up", "Medium Shot", "Bird's Eye View")
-- SETTING: background location, time of day, lighting, environment details
-- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"])
-- CHARACTER_EXPRESSIONS: expression of each present character (e.g., "Narrator laughing, Friend smiling with big eyes")
-- ACTION: physical action taking place in the scene
-- VISUAL_DETAILS: key visual items, objects, or details to draw (e.g. "falling leaves", "coffee mugs on table")
-- DIALOGUE: list of dialogue objects with speaker and text (e.g., [{{"speaker": "Friend", "text": "I missed you!"}}]) or empty list if none
-- INNER_THOUGHT: string of thought bubble text, or empty string if none
-- CAPTION: short narrator box text (max 12 words) or empty string if none
-- BUBBLE_TYPE: "speech" | "thought" | "shout" | "whisper" | "none"
-- MOOD: overall emotional mood of this specific panel
-- LIGHTING: lighting condition (e.g. "golden hour light", "dim indoor moonlight")
-
-Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
-{{
-  "pages": [
-    {{
-      "page_number": 1,
-      "panels": [
-        {{
-          "panel_number": 1,
-          "camera": "Wide Shot",
-          "setting": "Outside cafe",
-          "characters_present": ["Narrator", "Best Friend"],
-          "character_expressions": "Best Friend hugging Narrator with eyes closed tight, smiling",
-          "action": "Best Friend runs and hugs narrator",
-          "visual_details": "falling autumn leaves, cozy cafe front entrance",
-          "dialogue": [{{"speaker": "Best Friend", "text": "I missed you!"}}],
-          "inner_thought": "",
-          "caption": "Today I met my best friend after 6 months.",
-          "bubble_type": "speech",
-          "mood": "Warm",
-          "lighting": "Golden hour sunlight"
-        }},
-        {{
-          "panel_number": 2,
-          "camera": "Medium Shot",
-          "setting": "Inside the warm cafe",
-          "characters_present": ["Narrator", "Best Friend"],
-          "character_expressions": "Both smiling warmly, holding cups",
-          "action": "Sitting at a cozy corner table drinking coffee",
-          "visual_details": "steaming coffee mugs, warm overhead lights",
-          "dialogue": [{{"speaker": "Narrator", "text": "It is so good to see you!"}}],
-          "inner_thought": "",
-          "caption": "We immediately went to our favorite corner spot.",
-          "bubble_type": "speech",
-          "mood": "Joyful",
-          "lighting": "Warm soft indoor lighting"
-        }},
-        {{
-          "panel_number": 3,
-          "camera": "Close Up",
-          "setting": "Cafe table",
-          "characters_present": ["Best Friend"],
-          "character_expressions": "Best Friend talking enthusiastically, expressive hands",
-          "action": "Best Friend sharing animated stories about recent travels",
-          "visual_details": "gesturing with hands, laughing",
-          "dialogue": [{{"speaker": "Best Friend", "text": "And then we got completely lost!"}}],
-          "inner_thought": "",
-          "caption": "She spent hours catching me up on all her wild adventures.",
-          "bubble_type": "speech",
-          "mood": "Excited",
-          "lighting": "Cozy ambient restaurant lights"
-        }},
-        {{
-          "panel_number": 4,
-          "camera": "Wide Shot",
-          "setting": "Outside the cafe in the evening",
-          "characters_present": ["Narrator", "Best Friend"],
-          "character_expressions": "Both smiling and waving goodbye",
-          "action": "Waving goodbye as they head in different directions",
-          "visual_details": "street lamps glowing, sunset sky in background",
-          "dialogue": [{{"speaker": "Narrator", "text": "Let's do this again soon!"}}],
-          "inner_thought": "I feel so happy today.",
-          "caption": "As the sun set, we promised to never lose touch again.",
-          "bubble_type": "speech",
-          "mood": "Peaceful",
-          "lighting": "Beautiful dusk sunset glow"
-        }}
-      ]
-    }}
-  ]
-}}"""
-    try:
-        res = requests.post(url,
-            json={"contents": [{"parts": [{"text": prompt}]}],
-                  "generationConfig": {"temperature": 0.5, "responseMimeType": "application/json"}},
-            timeout=35)
-        if res.status_code == 200:
-            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            raw = raw.replace("```json","").replace("```","").strip()
-            return json.loads(raw).get("pages", [])
-    except Exception as e:
-        print(f"[Agent 2 Comic Director error]: {e}")
-    return []
-
-
 def _run_agent_comic_director_single_page(api_key, content, story_analysis, page_num, total_pages, prior_events_summary):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     prompt = f"""You are 'Agent 2: Comic Director / Storyboard AI'. You think like a movie director and professional storyboard artist.
-
+    
 ORIGINAL DIARY ENTRY:
 \"\"\"{content}\"\"\"
 
 STORY UNDERSTANDING (from Agent 1):
 {json.dumps(story_analysis, indent=2)}
 
-You are storyboarding PAGE {page_num} of exactly {total_pages} pages.
-Each page must have exactly 4 panels.
+Create exactly 1 comic page (page_number 1) with exactly 1 continuous narrative splash panel (panel_number 1) that represents the entire journal entry in a beautiful storytelling flow. This single image should depict the overall journey, mood, setting, and key characters of the whole story in one fluid composition.
 
-PRIOR PAGE SUMMARIES / CONTEXT:
-{prior_events_summary or "None. This is the first page of the comic."}
-
-For PAGE {page_num}, decide the storyboard for exactly 4 panels (panel_number 1 to 4).
-Ensure they advance the story timeline logically from previous pages.
-
-For each panel, decide:
-- PANEL_NUMBER (1 to 4)
-- CAMERA: camera angle (e.g. "Wide Shot", "Close Up", "Extreme Close Up", "Medium Shot", "Bird's Eye View")
+For this single panel, decide:
+- PANEL_NUMBER (must be 1)
+- CAMERA: camera angle (e.g. "Wide Shot", "Medium Shot", "Bird's Eye View")
 - SETTING: background location, time of day, lighting, environment details
 - CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"])
-- CHARACTER_EXPRESSIONS: expression of each present character (e.g., "Narrator laughing, Friend smiling with big eyes")
-- ACTION: physical action taking place in the scene
-- VISUAL_DETAILS: key visual items, objects, or details to draw (e.g. "falling leaves", "coffee mugs on table")
+- CHARACTER_EXPRESSIONS: expression of each present character (e.g., "Narrator laughing, Friend smiling")
+- ACTION: physical action taking place in the scene that summarizes the story flow
+- VISUAL_DETAILS: key visual items, objects, or details to draw that show the story's flow
 - DIALOGUE: list of dialogue objects with speaker and text (e.g., [{{"speaker": "Friend", "text": "I missed you!"}}]) or empty list if none
 - INNER_THOUGHT: string of thought bubble text, or empty string if none
-- CAPTION: short narrator box text (max 12 words) or empty string if none
+- CAPTION: short narrative text (max 18 words) summarizing the essence of the entire journal entry
 - BUBBLE_TYPE: "speech" | "thought" | "shout" | "whisper" | "none"
-- MOOD: overall emotional mood of this specific panel
-- LIGHTING: lighting condition (e.g. "golden hour light", "dim indoor moonlight")
+- MOOD: overall emotional mood of the story
+- LIGHTING: lighting condition
 
 Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
 {{
-  "page_number": {page_num},
+  "page_number": 1,
   "panels": [
     {{
       "panel_number": 1,
       "camera": "Wide Shot",
-      "setting": "Outside cafe",
-      "characters_present": ["Narrator", "Best Friend"],
-      "character_expressions": "Best Friend hugging Narrator with eyes closed tight, smiling",
-      "action": "Best Friend runs and hugs narrator",
-      "visual_details": "falling autumn leaves, cozy cafe front entrance",
-      "dialogue": [{{"speaker": "Best Friend", "text": "I missed you!"}}],
-      "inner_thought": "",
-      "caption": "Today I met my best friend after 6 months.",
-      "bubble_type": "speech",
-      "mood": "Warm",
-      "lighting": "Golden hour sunlight"
-    }},
-    {{
-      "panel_number": 2,
-      "camera": "Medium Shot",
-      "setting": "Inside the warm cafe",
-      "characters_present": ["Narrator", "Best Friend"],
-      "character_expressions": "Both smiling warmly, holding cups",
-      "action": "Sitting at a cozy corner table drinking coffee",
-      "visual_details": "steaming coffee mugs, warm overhead lights",
-      "dialogue": [{{"speaker": "Narrator", "text": "It is so good to see you!"}}],
-      "inner_thought": "",
-      "caption": "We immediately went to our favorite corner spot.",
-      "bubble_type": "speech",
-      "mood": "Joyful",
-      "lighting": "Warm soft indoor lighting"
-    }},
-    {{
-      "panel_number": 3,
-      "camera": "Close Up",
-      "setting": "Cafe table",
-      "characters_present": ["Best Friend"],
-      "character_expressions": "Best Friend talking enthusiastically, expressive hands",
-      "action": "Best Friend sharing animated stories about recent travels",
-      "visual_details": "gesturing with hands, laughing",
-      "dialogue": [{{"speaker": "Best Friend", "text": "And then we got completely lost!"}}],
-      "inner_thought": "",
-      "caption": "She spent hours catching me up on all her wild adventures.",
-      "bubble_type": "speech",
-      "mood": "Excited",
-      "lighting": "Cozy ambient restaurant lights"
-    }},
-    {{
-      "panel_number": 4,
-      "camera": "Wide Shot",
-      "setting": "Outside the cafe in the evening",
-      "characters_present": ["Narrator", "Best Friend"],
-      "character_expressions": "Both smiling and waving goodbye",
-      "action": "Waving goodbye as they head in different directions",
-      "visual_details": "street lamps glowing, sunset sky in background",
-      "dialogue": [{{"speaker": "Narrator", "text": "Let's do this again soon!"}}],
-      "inner_thought": "I feel so happy today.",
-      "caption": "As the sun set, we promised to never lose touch again.",
-      "bubble_type": "speech",
+      "setting": "Cozy room with warm lights",
+      "characters_present": ["Narrator"],
+      "character_expressions": "peaceful and content smile",
+      "action": "Writing down today's adventure in a journal while looking at a beautiful starry sky through the window",
+      "visual_details": "open diary on desk, warm desk lamp, stars shining bright outside, coffee mug steaming",
+      "dialogue": [],
+      "inner_thought": "I feel so grateful for this amazing journey.",
+      "caption": "A wonderful day of friendship and shared adventures.",
+      "bubble_type": "thought",
       "mood": "Peaceful",
-      "lighting": "Beautiful dusk sunset glow"
+      "lighting": "Warm indoor glow with cool night sky highlight"
     }}
   ]
 }}"""
@@ -628,14 +464,21 @@ def _draw_caption_box(draw, x0, y0, x1, text, font, bg=(0,0,0,200), fg=(255,255,
 # ── 5. Composite one full comic PAGE from panel images + metadata ─────────────
 def _composite_page(panel_images_bytes, panels_meta, page_num, total_pages, color_style):
     """
-    Layout: 2 columns × 2 rows of panels (each 400×400).
+    Layout: 1 large narrative splash panel or 2 columns × 2 rows of panels depending on panel count.
     Page canvas: ~820 × 900 with margins, page label, panel borders.
     Overlays: caption boxes, speech bubbles, thought bubbles — all crisp text.
     """
-    PANEL_W, PANEL_H = 400, 400
-    COLS, ROWS       = 2, 2
-    GUTTER           = 8
-    MARGIN           = 16
+    is_single_panel = len(panels_meta) == 1
+    if is_single_panel:
+        PANEL_W, PANEL_H = 780, 800
+        COLS, ROWS       = 1, 1
+        GUTTER           = 0
+        MARGIN           = 20
+    else:
+        PANEL_W, PANEL_H = 400, 400
+        COLS, ROWS       = 2, 2
+        GUTTER           = 8
+        MARGIN           = 16
     HEADER_H         = 36
 
     page_w = MARGIN*2 + COLS*PANEL_W + (COLS-1)*GUTTER
@@ -777,36 +620,30 @@ def _build_color_style(mood):
 
 
 def _estimate_pages(content):
-    words    = len(content.split())
-    panels   = max(3, min(MAX_PANELS_PER_PAGE * MAX_PAGES, words // 70))
-    return min(MAX_PAGES, max(1, math.ceil(panels / MAX_PANELS_PER_PAGE)))
+    return 1
 
 
 def _fallback_storyboard(content, num_pages):
     """Simple sentence-split fallback when Gemini isn't available."""
     sentences = [s.strip() for s in content.replace("!",".").replace("?",".").split(".") if s.strip()]
-    total     = num_pages * MAX_PANELS_PER_PAGE
-    chunk     = max(1, len(sentences) // total)
     pages     = []
-    panel_idx = 0
     for p in range(num_pages):
-        panels = []
-        for pn in range(MAX_PANELS_PER_PAGE):
-            chunk_sentences = sentences[panel_idx*chunk:(panel_idx+1)*chunk]
-            text = " ".join(chunk_sentences)[:120]
-            panels.append({
-                "panel_number":        pn + 1,
-                "setting":             text or "A quiet scene",
-                "characters_present":  [],
-                "character_expressions": "neutral",
-                "action":              text,
-                "visual_elements":     "",
-                "dialogue":            [],
-                "inner_thought":       "",
-                "caption":             text[:60],
-                "bubble_type":         "none"
-            })
-            panel_idx += 1
+        summary_text = " ".join(sentences)[:120] if sentences else "A quiet, reflective moment."
+        panels = [{
+            "panel_number":        1,
+            "camera":              "Wide Shot",
+            "setting":             "A beautiful narrative setting reflecting the entry",
+            "characters_present":  ["Narrator"],
+            "character_expressions": "reflective",
+            "action":              summary_text,
+            "visual_details":      "gentle warm glows, cozy illustrative elements summarizing the journey",
+            "dialogue":            [],
+            "inner_thought":       "",
+            "caption":             summary_text[:80],
+            "bubble_type":         "none",
+            "mood":                "Peaceful",
+            "lighting":            "soft ambient glow"
+        }]
         pages.append({"page_number": p+1, "panels": panels})
     return pages
 
