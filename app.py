@@ -181,41 +181,43 @@ ORIGINAL DIARY ENTRY:
 STORY UNDERSTANDING (from Agent 1):
 {json.dumps(story_analysis, indent=2)}
 
-Create exactly 1 comic page (page_number 1) with exactly 1 continuous narrative splash panel (panel_number 1) that represents the entire journal entry in a beautiful storytelling flow. This single image should depict the overall journey, mood, setting, and key characters of the whole story in one fluid composition.
+Create exactly 1 comic page (page_number {page_num}) with exactly 1 continuous narrative splash panel (panel_number 1) that represents the entire journal entry in a beautiful storytelling flow. This single image should depict the overall journey, mood, setting, and key characters of the whole story in one fluid composition.
 
 For this single panel, decide:
 - PANEL_NUMBER (must be 1)
 - CAMERA: camera angle (e.g. "Wide Shot", "Medium Shot", "Bird's Eye View")
-- SETTING: background location, time of day, lighting, environment details
-- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"])
-- CHARACTER_EXPRESSIONS: expression of each present character (e.g., "Narrator laughing, Friend smiling")
-- ACTION: physical action taking place in the scene that summarizes the story flow
+- SETTING: background location, time of day, lighting, environment details FROM THE USER'S DIARY ENTRY
+- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"]) representing the characters actually in this scene
+- CHARACTER_EXPRESSIONS: expression of each present character representing their feelings in this story
+- ACTION: physical action taking place in the scene that summarizes the story flow of this diary entry
 - VISUAL_DETAILS: key visual items, objects, or details to draw that show the story's flow
-- DIALOGUE: list of dialogue objects with speaker and text (e.g., [{{"speaker": "Friend", "text": "I missed you!"}}]) or empty list if none
+- DIALOGUE: list of dialogue objects with speaker and text or empty list if none
 - INNER_THOUGHT: string of thought bubble text, or empty string if none
 - CAPTION: short narrative text (max 18 words) summarizing the essence of the entire journal entry
 - BUBBLE_TYPE: "speech" | "thought" | "shout" | "whisper" | "none"
 - MOOD: overall emotional mood of the story
 - LIGHTING: lighting condition
 
-Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
+CRITICAL DIRECTIVE: Do NOT use the example values of "Cozy room with warm lights" or "Writing down today's adventure". You MUST extract and use the ACTUAL setting, characters, action, and mood directly from the provided ORIGINAL DIARY ENTRY and STORY UNDERSTANDING.
+
+Respond ONLY with valid JSON using this exact structure (no markdown wrappers, no ```json formatting, just raw JSON):
 {{
-  "page_number": 1,
+  "page_number": {page_num},
   "panels": [
     {{
       "panel_number": 1,
-      "camera": "Wide Shot",
-      "setting": "Cozy room with warm lights",
-      "characters_present": ["Narrator"],
-      "character_expressions": "peaceful and content smile",
-      "action": "Writing down today's adventure in a journal while looking at a beautiful starry sky through the window",
-      "visual_details": "open diary on desk, warm desk lamp, stars shining bright outside, coffee mug steaming",
+      "camera": "<camera_angle_e.g_Wide_Shot>",
+      "setting": "<dynamic_setting_from_diary>",
+      "characters_present": ["<character1_from_diary>", "<character2_from_diary>"],
+      "character_expressions": "<dynamic_expressions_representing_characters_emotions_in_diary>",
+      "action": "<dynamic_action_from_diary_showing_the_core_story_moment>",
+      "visual_details": "<dynamic_visual_details_such_as_clothing_and_objects_from_diary>",
       "dialogue": [],
-      "inner_thought": "I feel so grateful for this amazing journey.",
-      "caption": "A wonderful day of friendship and shared adventures.",
-      "bubble_type": "thought",
-      "mood": "Peaceful",
-      "lighting": "Warm indoor glow with cool night sky highlight"
+      "inner_thought": "<thought_from_diary_or_empty>",
+      "caption": "<dynamic_narrative_caption_box_text_max_18_words_summarizing_this_moment>",
+      "bubble_type": "none",
+      "mood": "<dynamic_mood_from_diary>",
+      "lighting": "<dynamic_lighting_from_diary_setting>"
     }}
   ]
 }}"""
