@@ -193,6 +193,51 @@ Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
           "bubble_type": "speech",
           "mood": "Warm",
           "lighting": "Golden hour sunlight"
+        }},
+        {{
+          "panel_number": 2,
+          "camera": "Medium Shot",
+          "setting": "Inside the warm cafe",
+          "characters_present": ["Narrator", "Best Friend"],
+          "character_expressions": "Both smiling warmly, holding cups",
+          "action": "Sitting at a cozy corner table drinking coffee",
+          "visual_details": "steaming coffee mugs, warm overhead lights",
+          "dialogue": [{{"speaker": "Narrator", "text": "It is so good to see you!"}}],
+          "inner_thought": "",
+          "caption": "We immediately went to our favorite corner spot.",
+          "bubble_type": "speech",
+          "mood": "Joyful",
+          "lighting": "Warm soft indoor lighting"
+        }},
+        {{
+          "panel_number": 3,
+          "camera": "Close Up",
+          "setting": "Cafe table",
+          "characters_present": ["Best Friend"],
+          "character_expressions": "Best Friend talking enthusiastically, expressive hands",
+          "action": "Best Friend sharing animated stories about recent travels",
+          "visual_details": "gesturing with hands, laughing",
+          "dialogue": [{{"speaker": "Best Friend", "text": "And then we got completely lost!"}}],
+          "inner_thought": "",
+          "caption": "She spent hours catching me up on all her wild adventures.",
+          "bubble_type": "speech",
+          "mood": "Excited",
+          "lighting": "Cozy ambient restaurant lights"
+        }},
+        {{
+          "panel_number": 4,
+          "camera": "Wide Shot",
+          "setting": "Outside the cafe in the evening",
+          "characters_present": ["Narrator", "Best Friend"],
+          "character_expressions": "Both smiling and waving goodbye",
+          "action": "Waving goodbye as they head in different directions",
+          "visual_details": "street lamps glowing, sunset sky in background",
+          "dialogue": [{{"speaker": "Narrator", "text": "Let's do this again soon!"}}],
+          "inner_thought": "I feel so happy today.",
+          "caption": "As the sun set, we promised to never lose touch again.",
+          "bubble_type": "speech",
+          "mood": "Peaceful",
+          "lighting": "Beautiful dusk sunset glow"
         }}
       ]
     }}
@@ -340,17 +385,20 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style):
         f"professional manga-inspired panel art. NEVER scary or horrific."
     )
 
-def _fetch_panel_image(prompt, seed, retries=1):
+def _fetch_panel_image(prompt, seed, retries=2):
     """Fetch a single panel scene image — 256x256 for individual panels."""
     encoded = requests.utils.quote(prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=256&height=256&nologo=true&seed={seed}&model=flux"
     for attempt in range(retries):
+        current_seed = seed + attempt
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=256&height=256&nologo=true&seed={current_seed}"
         try:
-            resp = requests.get(url, timeout=40)
+            resp = requests.get(url, timeout=45)
             if resp.status_code == 200 and len(resp.content) > 2000:
                 return resp.content
         except Exception as e:
             print(f"[Pollinations panel] attempt {attempt+1} failed: {e}")
+        if attempt < retries - 1:
+            time.sleep(1.0)
         
     return None
 
@@ -729,36 +777,95 @@ def render_comic_pages():
     # Store Agent trace logs to send back to client
     quality_logs = []
 
+    # Compile all panel tasks for parallel processing
+    tasks = []
+    for page_data in pages_data:
+        page_num = page_data.get("page_number", len(result_pages) + 1)
+        panels   = page_data.get("panels", [])
+        for pi, panel in enumerate(panels):
+            tasks.append({
+                "page_num": page_num,
+                "panel_idx": pi,
+                "panel": panel
+            })
+
+    # Worker function to run fetch + optional Agent 4 Quality Check for a single panel
+    def process_panel_task(task):
+        pageNum = task["page_num"]
+        pi = task["panel_idx"]
+        panel = task["panel"]
+        prompt = _build_panel_scene_prompt(panel, character_sheet, color_style)
+        seed   = base_seed + pageNum * 100 + pi
+        
+        # Initial generation (with up to 2 retries)
+        img_bytes = _fetch_panel_image(prompt, seed, retries=2)
+        
+        # If it failed, try with a simplified fallback prompt!
+        if not img_bytes:
+            print(f"[Python Image Fetch] Complex prompt failed. Attempting with simplified fallback prompt...")
+            camera = panel.get("camera", "Medium Shot")
+            action = panel.get("action", "")
+            setting = panel.get("setting", "")
+            simple_prompt = f"Comic book panel art, {camera} shot. {action or setting or 'Scenic illustration'}. Style: {color_style}, clean comic book illustration, NO text, NO speech bubbles."
+            img_bytes = _fetch_panel_image(simple_prompt, seed + 1, retries=2)
+        
+        # Agent 4: Quality Check
+        verdict_info = {"verdict": "PASS", "reason": "Bypassed verification (No Gemini key)"}
+        if api_key and api_key not in ("", "MY_GEMINI_API_KEY") and img_bytes:
+            verdict_info = _run_agent_quality_check(api_key, img_bytes, panel)
+            
+            # If quality check tells us to REGENERATE, we do exactly one retry with an adjusted prompt!
+            if verdict_info.get("verdict") == "REGENERATE":
+                adj_advice = verdict_info.get("prompt_adjustment", "")
+                adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
+                print(f"[Quality Agent] Page {pageNum} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
+                
+                retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=2)
+                if retry_bytes:
+                    img_bytes = retry_bytes
+                    verdict_info["verdict"] = "PASS"
+                    verdict_info["reason"] = f"Regenerated successfully on retry. Previous issue: {verdict_info.get('reason')}"
+        
+        return {
+            "page_num": pageNum,
+            "panel_idx": pi,
+            "img_bytes": img_bytes,
+            "verdict_info": verdict_info,
+            "prompt_used": prompt
+        }
+
+    # Run tasks in parallel
+    results_map = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(process_panel_task, t): t for t in tasks}
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                p_num = res["page_num"]
+                p_idx = res["panel_idx"]
+                if p_num not in results_map:
+                    results_map[p_num] = {}
+                results_map[p_num][p_idx] = res
+            except Exception as exc:
+                print(f"[Parallel Worker Error] Task generated an exception: {exc}")
+
+    # Reconstruct pages and composite
     for page_data in pages_data:
         page_num = page_data.get("page_number", len(result_pages) + 1)
         panels   = page_data.get("panels", [])
 
-        # ── Step 4: Fetch panel images (with Agent 4 Quality Assurance Checks) ──
         panel_images = []
-        for pi, panel in enumerate(panels):
-            prompt = _build_panel_scene_prompt(panel, character_sheet, color_style)
-            seed   = base_seed + page_num * 100 + pi
-            
-            # Initial generation
-            img_bytes = _fetch_panel_image(prompt, seed)
-            
-            # Agent 4: Quality Check
-            verdict_info = {"verdict": "PASS", "reason": "Bypassed verification (No Gemini key)"}
-            if api_key and api_key not in ("", "MY_GEMINI_API_KEY") and img_bytes:
-                verdict_info = _run_agent_quality_check(api_key, img_bytes, panel)
-                
-                # If quality check tells us to REGENERATE, we do exactly one retry with an adjusted prompt!
-                if verdict_info.get("verdict") == "REGENERATE":
-                    adj_advice = verdict_info.get("prompt_adjustment", "")
-                    adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
-                    print(f"[Quality Agent] Page {page_num} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
-                    
-                    retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99)
-                    if retry_bytes:
-                        img_bytes = retry_bytes
-                        verdict_info["verdict"] = "PASS"
-                        verdict_info["reason"] = f"Regenerated successfully on retry. Previous issue: {verdict_info.get('reason')}"
-            
+        for pi in range(len(panels)):
+            p_res = results_map.get(page_num, {}).get(pi)
+            if p_res:
+                img_bytes = p_res["img_bytes"]
+                verdict_info = p_res["verdict_info"]
+                prompt = p_res["prompt_used"]
+            else:
+                img_bytes = None
+                verdict_info = {"verdict": "FAIL", "reason": "Parallel worker failed to return result"}
+                prompt = ""
+
             quality_logs.append({
                 "page": page_num,
                 "panel": pi + 1,
