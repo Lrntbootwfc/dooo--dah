@@ -257,6 +257,120 @@ Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
     return []
 
 
+def _run_agent_comic_director_single_page(api_key, content, story_analysis, page_num, total_pages, prior_events_summary):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    prompt = f"""You are 'Agent 2: Comic Director / Storyboard AI'. You think like a movie director and professional storyboard artist.
+
+ORIGINAL DIARY ENTRY:
+\"\"\"{content}\"\"\"
+
+STORY UNDERSTANDING (from Agent 1):
+{json.dumps(story_analysis, indent=2)}
+
+You are storyboarding PAGE {page_num} of exactly {total_pages} pages.
+Each page must have exactly 4 panels.
+
+PRIOR PAGE SUMMARIES / CONTEXT:
+{prior_events_summary or "None. This is the first page of the comic."}
+
+For PAGE {page_num}, decide the storyboard for exactly 4 panels (panel_number 1 to 4).
+Ensure they advance the story timeline logically from previous pages.
+
+For each panel, decide:
+- PANEL_NUMBER (1 to 4)
+- CAMERA: camera angle (e.g. "Wide Shot", "Close Up", "Extreme Close Up", "Medium Shot", "Bird's Eye View")
+- SETTING: background location, time of day, lighting, environment details
+- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"])
+- CHARACTER_EXPRESSIONS: expression of each present character (e.g., "Narrator laughing, Friend smiling with big eyes")
+- ACTION: physical action taking place in the scene
+- VISUAL_DETAILS: key visual items, objects, or details to draw (e.g. "falling leaves", "coffee mugs on table")
+- DIALOGUE: list of dialogue objects with speaker and text (e.g., [{{"speaker": "Friend", "text": "I missed you!"}}]) or empty list if none
+- INNER_THOUGHT: string of thought bubble text, or empty string if none
+- CAPTION: short narrator box text (max 12 words) or empty string if none
+- BUBBLE_TYPE: "speech" | "thought" | "shout" | "whisper" | "none"
+- MOOD: overall emotional mood of this specific panel
+- LIGHTING: lighting condition (e.g. "golden hour light", "dim indoor moonlight")
+
+Respond ONLY with valid JSON using this exact structure (no markdown wrappers):
+{{
+  "page_number": {page_num},
+  "panels": [
+    {{
+      "panel_number": 1,
+      "camera": "Wide Shot",
+      "setting": "Outside cafe",
+      "characters_present": ["Narrator", "Best Friend"],
+      "character_expressions": "Best Friend hugging Narrator with eyes closed tight, smiling",
+      "action": "Best Friend runs and hugs narrator",
+      "visual_details": "falling autumn leaves, cozy cafe front entrance",
+      "dialogue": [{{"speaker": "Best Friend", "text": "I missed you!"}}],
+      "inner_thought": "",
+      "caption": "Today I met my best friend after 6 months.",
+      "bubble_type": "speech",
+      "mood": "Warm",
+      "lighting": "Golden hour sunlight"
+    }},
+    {{
+      "panel_number": 2,
+      "camera": "Medium Shot",
+      "setting": "Inside the warm cafe",
+      "characters_present": ["Narrator", "Best Friend"],
+      "character_expressions": "Both smiling warmly, holding cups",
+      "action": "Sitting at a cozy corner table drinking coffee",
+      "visual_details": "steaming coffee mugs, warm overhead lights",
+      "dialogue": [{{"speaker": "Narrator", "text": "It is so good to see you!"}}],
+      "inner_thought": "",
+      "caption": "We immediately went to our favorite corner spot.",
+      "bubble_type": "speech",
+      "mood": "Joyful",
+      "lighting": "Warm soft indoor lighting"
+    }},
+    {{
+      "panel_number": 3,
+      "camera": "Close Up",
+      "setting": "Cafe table",
+      "characters_present": ["Best Friend"],
+      "character_expressions": "Best Friend talking enthusiastically, expressive hands",
+      "action": "Best Friend sharing animated stories about recent travels",
+      "visual_details": "gesturing with hands, laughing",
+      "dialogue": [{{"speaker": "Best Friend", "text": "And then we got completely lost!"}}],
+      "inner_thought": "",
+      "caption": "She spent hours catching me up on all her wild adventures.",
+      "bubble_type": "speech",
+      "mood": "Excited",
+      "lighting": "Cozy ambient restaurant lights"
+    }},
+    {{
+      "panel_number": 4,
+      "camera": "Wide Shot",
+      "setting": "Outside the cafe in the evening",
+      "characters_present": ["Narrator", "Best Friend"],
+      "character_expressions": "Both smiling and waving goodbye",
+      "action": "Waving goodbye as they head in different directions",
+      "visual_details": "street lamps glowing, sunset sky in background",
+      "dialogue": [{{"speaker": "Narrator", "text": "Let's do this again soon!"}}],
+      "inner_thought": "I feel so happy today.",
+      "caption": "As the sun set, we promised to never lose touch again.",
+      "bubble_type": "speech",
+      "mood": "Peaceful",
+      "lighting": "Beautiful dusk sunset glow"
+    }}
+  ]
+}}"""
+    try:
+        res = requests.post(url,
+            json={"contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.5, "responseMimeType": "application/json"}},
+            timeout=35)
+        if res.status_code == 200:
+            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json","").replace("```","").strip()
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[Agent 2 Single Page Comic Director error for page {page_num}]: {e}")
+    return None
+
+
 # ── 3. Agent 3: Character Sheet Generator AI ───────────────────────────────
 def _run_agent_character_sheet(api_key, story_analysis, char_guidelines):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
@@ -385,20 +499,21 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style):
         f"professional manga-inspired panel art. NEVER scary or horrific."
     )
 
-def _fetch_panel_image(prompt, seed, retries=2):
-    """Fetch a single panel scene image — 256x256 for individual panels."""
+def _fetch_panel_image(prompt, seed, retries=3):
+    """Fetch a single panel scene image — 256x255 for individual panels with retry and jitter."""
     encoded = requests.utils.quote(prompt)
     for attempt in range(retries):
         current_seed = seed + attempt
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=256&height=256&nologo=true&seed={current_seed}"
         try:
-            resp = requests.get(url, timeout=45)
+            resp = requests.get(url, timeout=60)
             if resp.status_code == 200 and len(resp.content) > 2000:
                 return resp.content
+            print(f"[Pollinations] status={resp.status_code} len={len(resp.content)}")
         except Exception as e:
             print(f"[Pollinations panel] attempt {attempt+1} failed: {e}")
         if attempt < retries - 1:
-            time.sleep(1.0)
+            time.sleep(1.5 + random.random())
         
     return None
 
@@ -712,6 +827,11 @@ def render_comic_pages():
     avatar_desc       = data.get("avatar_desc", "")
     global_alignments = data.get("global_alignments", {})
 
+    # Optional parameters for single page regeneration
+    page_number_to_regen = data.get("page_number_to_regen")
+    existing_pages       = data.get("existing_pages", [])
+    existing_quality_logs = data.get("existing_quality_logs", [])
+
     if not content:
         return jsonify({"error": "content cannot be empty."}), 400
 
@@ -731,7 +851,7 @@ def render_comic_pages():
     api_key         = os.environ.get("GEMINI_API_KEY", "")
     num_pages       = _estimate_pages(content)
 
-    print(f"[Comic v3 Multi-Agent] {len(content.split())} words → {num_pages} pages")
+    print(f"[Comic v4 Multi-Agent] {len(content.split())} words → {num_pages} pages (Regen page: {page_number_to_regen})")
 
     # ── Step 1: Agent 1 - Story Understanding ──────────────────────────────
     story_analysis = None
@@ -764,13 +884,76 @@ def render_comic_pages():
 
     # ── Step 3: Agent 2 - Comic Director (Storyboard) ──────────────────────
     pages_data = []
-    if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
-        pages_data = _run_agent_comic_director(api_key, content, story_analysis, num_pages)
+    reusing_storyboard = False
+    
+    if page_number_to_regen is not None:
+        try:
+            page_number_to_regen = int(page_number_to_regen)
+        except:
+            page_number_to_regen = None
+
+    if page_number_to_regen is not None and existing_pages:
+        target_page = None
+        for p in existing_pages:
+            if p.get("page_number") == page_number_to_regen:
+                target_page = p
+                break
+        if target_page and target_page.get("panels"):
+            print(f"[Regenerate Page {page_number_to_regen}] Reusing existing storyboard panels.")
+            pages_data = [{
+                "page_number": page_number_to_regen,
+                "panels": target_page.get("panels"),
+                "_used_fallback": target_page.get("used_storyboard_fallback", False)
+            }]
+            reusing_storyboard = True
 
     if not pages_data:
-        pages_data = _fallback_storyboard(content, num_pages)
+        if page_number_to_regen is not None:
+            print(f"[Regenerate Page {page_number_to_regen}] Storyboard not found/invalid. Generating single-page storyboard.")
+            prior_summary = ""
+            for ep in existing_pages:
+                if ep.get("page_number") < page_number_to_regen:
+                    panels_list = ep.get("panels", [])
+                    prior_summary += f" Page {ep.get('page_number')} covered: " + "; ".join(p.get("action","") for p in panels_list)
+            
+            page = None
+            if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
+                page = _run_agent_comic_director_single_page(api_key, content, story_analysis, page_number_to_regen, num_pages, prior_summary)
+            
+            if page and page.get("panels"):
+                page["_used_fallback"] = False
+                pages_data = [page]
+            else:
+                fb_page = _fallback_storyboard(content, 1)[0]
+                fb_page["page_number"] = page_number_to_regen
+                fb_page["_used_fallback"] = True
+                pages_data = [fb_page]
+        else:
+            print(f"[Comic Director] Generating {num_pages} pages in a loop (once per page)...")
+            pages_data = []
+            if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
+                prior_summary = ""
+                for pn in range(1, num_pages + 1):
+                    page = _run_agent_comic_director_single_page(api_key, content, story_analysis, pn, num_pages, prior_summary)
+                    if page and page.get("panels"):
+                        page["_used_fallback"] = False
+                        pages_data.append(page)
+                        prior_summary += f" Page {pn} covered: " + "; ".join(p.get("action","") for p in page.get("panels", []))
+                    else:
+                        print(f"[Comic Director] Page {pn} storyboard failed, using fallback page...")
+                        fb_page = _fallback_storyboard(content, 1)[0]
+                        fb_page["page_number"] = pn
+                        fb_page["_used_fallback"] = True
+                        pages_data.append(fb_page)
+            
+            if not pages_data:
+                pages_data = _fallback_storyboard(content, num_pages)
 
-    total_pages  = len(pages_data)
+    if page_number_to_regen is not None and existing_pages:
+        total_pages = max(num_pages, len(existing_pages))
+    else:
+        total_pages = len(pages_data)
+
     base_seed    = random.randint(1, 500_000)
     result_pages = []
     
@@ -797,8 +980,8 @@ def render_comic_pages():
         prompt = _build_panel_scene_prompt(panel, character_sheet, color_style)
         seed   = base_seed + pageNum * 100 + pi
         
-        # Initial generation (with up to 2 retries)
-        img_bytes = _fetch_panel_image(prompt, seed, retries=2)
+        # Initial generation (with up to 3 retries)
+        img_bytes = _fetch_panel_image(prompt, seed, retries=3)
         
         # If it failed, try with a simplified fallback prompt!
         if not img_bytes:
@@ -807,7 +990,7 @@ def render_comic_pages():
             action = panel.get("action", "")
             setting = panel.get("setting", "")
             simple_prompt = f"Comic book panel art, {camera} shot. {action or setting or 'Scenic illustration'}. Style: {color_style}, clean comic book illustration, NO text, NO speech bubbles."
-            img_bytes = _fetch_panel_image(simple_prompt, seed + 1, retries=2)
+            img_bytes = _fetch_panel_image(simple_prompt, seed + 1, retries=3)
         
         # Agent 4: Quality Check
         verdict_info = {"verdict": "PASS", "reason": "Bypassed verification (No Gemini key)"}
@@ -820,7 +1003,7 @@ def render_comic_pages():
                 adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
                 print(f"[Quality Agent] Page {pageNum} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
                 
-                retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=2)
+                retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=3)
                 if retry_bytes:
                     img_bytes = retry_bytes
                     verdict_info["verdict"] = "PASS"
@@ -836,7 +1019,7 @@ def render_comic_pages():
 
     # Run tasks in parallel
     results_map = {}
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(process_panel_task, t): t for t in tasks}
         for future in as_completed(futures):
             try:
@@ -849,9 +1032,31 @@ def render_comic_pages():
             except Exception as exc:
                 print(f"[Parallel Worker Error] Task generated an exception: {exc}")
 
-    # Reconstruct pages and composite
+    # ── Retry pass: find any panels that came back empty and give them one more shot ──
+    retry_tasks = []
     for page_data in pages_data:
-        page_num = page_data.get("page_number", len(result_pages) + 1)
+        page_num = page_data.get("page_number")
+        panels = page_data.get("panels", [])
+        for pi in range(len(panels)):
+            p_res = results_map.get(page_num, {}).get(pi)
+            if not p_res or not p_res.get("img_bytes"):
+                retry_tasks.append({"page_num": page_num, "panel_idx": pi, "panel": panels[pi]})
+
+    if retry_tasks:
+        print(f"[Retry Pass] {len(retry_tasks)} panels missing images, retrying...")
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(process_panel_task, t): t for t in retry_tasks}
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    results_map.setdefault(res["page_num"], {})[res["panel_idx"]] = res
+                except Exception as exc:
+                    print(f"[Retry Pass Error] {exc}")
+
+    # Reconstruct pages and composite
+    newly_composited_pages = []
+    for page_data in pages_data:
+        page_num = page_data.get("page_number")
         panels   = page_data.get("panels", [])
 
         panel_images = []
@@ -888,13 +1093,40 @@ def render_comic_pages():
             data_url = _svg_fallback(page_num, total_pages, mood)
             fallback = True
 
-        result_pages.append({
+        newly_composited_pages.append({
             "page_number":    page_num,
             "image_data_url": data_url,
             "panels":         panels,
             "panel_count":    len(panels),
-            "fallback":       fallback
+            "fallback":       fallback,
+            "used_storyboard_fallback": page_data.get("_used_fallback", False),
+            "panels_with_placeholder_image": sum(1 for img in panel_images if not img),
         })
+
+    if page_number_to_regen is not None and existing_pages:
+        # Merge newly regenerated page into existing pages list
+        existing_pages_map = {p.get("page_number"): p for p in existing_pages}
+        result_pages = []
+        for pn in range(1, total_pages + 1):
+            if pn == page_number_to_regen:
+                new_p = next((p for p in newly_composited_pages if p["page_number"] == pn), None)
+                if new_p:
+                    result_pages.append(new_p)
+                elif pn in existing_pages_map:
+                    result_pages.append(existing_pages_map[pn])
+            else:
+                if pn in existing_pages_map:
+                    result_pages.append(existing_pages_map[pn])
+        
+        # Merge quality control logs
+        merged_quality_logs = []
+        for log in existing_quality_logs:
+            if log.get("page") != page_number_to_regen:
+                merged_quality_logs.append(log)
+        merged_quality_logs.extend(quality_logs)
+        quality_logs = merged_quality_logs
+    else:
+        result_pages = newly_composited_pages
 
     return jsonify({
         "status":      "Success",
