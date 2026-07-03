@@ -294,25 +294,31 @@ def _run_agent_quality_check(api_key, img_bytes, panel_meta):
         return {"verdict": "REGENERATE", "reason": "No valid image data generated", "prompt_adjustment": "Make prompt simpler"}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-    
-    prompt = f"""You are 'Agent 4: Quality Assurance Agent'. Your task is to verify if the generated comic panel image matches the story direction.
+    required_props = panel_meta.get("visual_details", panel_meta.get("visual_elements", "")) or "none specified"
+
+    prompt = f"""You are 'Agent 4: Quality Assurance Agent'. Your task is to verify if the generated illustration actually matches the story direction — this is a CONTENT ACCURACY check, not just a technical glitch check.
 
 TARGET STORY DETAILS:
-- Action/Characters: {panel_meta.get("action", "")}
-- Present: {", ".join(panel_meta.get("characters_present", []))}
-- Lighting/Setting: {panel_meta.get("setting", "")} ({panel_meta.get("lighting", "default lighting")})
-- Expression: {panel_meta.get("character_expressions", "")}
+- Action/story arc that MUST be depicted: {panel_meta.get("action", "")}
+- Characters that must be present: {", ".join(panel_meta.get("characters_present", []))}
+- Setting/lighting: {panel_meta.get("setting", "")} ({panel_meta.get("lighting", "default lighting")})
+- Expressions: {panel_meta.get("character_expressions", "")}
+- REQUIRED PROPS/OBJECTS that must be visibly present in the image: {required_props}
 
-Check the generated illustration for:
-1. Visual glitches (extra fingers/arms, distorted faces, missing key components).
-2. Does it contain text or word bubbles drawn by the AI model? (The image MUST NOT contain any words/bubble text since we overlay them digitally).
-3. Does it capture the targeted action and setting reasonably?
+Check the generated illustration for ALL of the following, in order of importance:
+1. CONTENT ACCURACY (most important): Are the required props/objects listed above actually visible in the image? For example, if "birthday cake" is required, is there actually a cake drawn? If a required prop is clearly missing or the wrong thing was drawn instead, this MUST be REGENERATE.
+2. Does the image correctly avoid depicting any named/copyrighted show, movie, game, or brand's actual characters or logos (it should only ever show a generic symbolic scene for those)?
+3. Visual glitches (extra fingers/arms, distorted faces, missing key components).
+4. Does it contain text or word bubbles drawn by the AI model? (The image MUST NOT contain any words/bubble text since we overlay them digitally).
+5. Does it capture the targeted action and setting reasonably overall?
+
+Be strict about #1 — a technically clean, glitch-free image that is missing its required story props is still a FAIL and must be REGENERATE.
 
 Respond ONLY with a valid JSON block of this structure:
 {{
   "verdict": "PASS" | "REGENERATE",
-  "reason": "Detailed observation explaining why it passes or needs regeneration",
-  "prompt_adjustment": "If REGENERATE, write a modified version of the prompt to solve the issue, else empty string"
+  "reason": "Detailed observation explaining why it passes or needs regeneration, explicitly naming any missing required prop",
+  "prompt_adjustment": "If REGENERATE, write an adjustment that explicitly re-emphasizes the missing prop/element (e.g. 'MUST include a birthday cake with lit candles clearly visible in the foreground'), else empty string"
 }}"""
     try:
         res = requests.post(url,
@@ -368,33 +374,36 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_pan
 
     if is_single_panel:
         flow_directive = (
-            f"This is ONE single flowing illustration that tells the ENTIRE story of the diary entry "
-            f"from beginning to end, like a beautifully composed storybook spread or graphic-novel splash page. "
-            f"Compose it so the eye travels through the story: use foreground/midground/background layering, "
-            f"a winding path, changing light, or repeated smaller figures of the SAME characters at different "
-            f"moments to imply passage of time and the journey of events — all blended seamlessly into one "
-            f"cohesive scene, NOT a grid, NOT separate boxes. Every character that appears must keep the exact "
-            f"same face, hairstyle, and outfit described below in every part of the composition. "
+            f"Compose this as ONE single flowing illustration telling the entire story from beginning to end — "
+            f"a storybook spread, not a grid. Use foreground/midground/background layering or repeated smaller "
+            f"figures of the same characters at different moments to show the passage of time, blended into one scene. "
         )
     else:
         flow_directive = ""
 
-    return (
-        f"Comic book illustration, {camera} shot. {flow_directive}"
-        f"{char_ref_str} "
-        f"Scene and background: {setting}. Lighting: {lighting}. Mood: {mood}. "
-        f"Action / story arc: {action}. Character expressions: {expressions}. "
-        f"Visual details and props to include: {visual_details}. "
-        f"If any named movie, TV show, book, game, or brand is referenced anywhere above, do NOT depict its "
-        f"actual characters, logos, or title text — depict only a generic scene of someone experiencing that "
-        f"kind of media (e.g. a glowing screen, a book held open, a game controller), and do not take proper "
-        f"nouns literally as their dictionary meaning. "
-        f"LEAVE EMPTY WHITE SPACE at the very top (15% of image) for caption text overlay. "
-        f"NO speech bubbles, NO text, NO words, NO letters anywhere in the image. "
-        f"Style: {color_style}, clean illustration, detailed expressive background, "
-        f"professional wholesome webtoon/manga-inspired art, highly detailed character faces. "
-        f"NEVER scary or horrific."
+    # ── Lead with the actual concrete content — this is what the image model should weight most ──
+    core_content = (
+        f"{action}. "
+        f"Setting: {setting}. "
+        f"Characters present and what they look like: {char_ref_str} "
+        f"Their expressions: {expressions}. "
+        f"Specific objects/props that MUST be visibly included in the scene: {visual_details}. "
+        f"Lighting: {lighting}. Overall mood: {mood}. "
     )
+
+    # ── Style and technical/negative rules come after — models handle these fine even when trailing ──
+    style_and_rules = (
+        f"{flow_directive}"
+        f"Camera framing: {camera} shot. "
+        f"Art style: {color_style}, clean illustration, wholesome webtoon/manga-inspired, highly detailed faces, never scary. "
+        f"If any named movie, TV show, book, game, or brand is referenced in the props/action above, do NOT draw its "
+        f"actual characters, logos, or title text — draw only a generic scene of someone experiencing that kind of "
+        f"media instead, and never interpret a proper noun as its ordinary dictionary meaning. "
+        f"Leave empty white space at the very top (15% of image) for a caption overlay. "
+        f"Absolutely no speech bubbles, no text, no words, no letters anywhere in the image."
+    )
+
+    return f"{core_content}{style_and_rules}"
 
 def _fetch_panel_image_gemini(prompt, api_key, width=768, height=800):
     """Generate a scene image using Gemini's native image model (gemini-2.5-flash-image, aka 'Nano Banana').
@@ -948,7 +957,7 @@ def render_comic_pages():
             # If quality check tells us to REGENERATE, we do exactly one retry with an adjusted prompt!
             if verdict_info.get("verdict") == "REGENERATE":
                 adj_advice = verdict_info.get("prompt_adjustment", "")
-                adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
+                adjusted_prompt = f"CRITICAL FIX REQUIRED: {adj_advice}. Now generate: {prompt}" if adj_advice else prompt
                 print(f"[Quality Agent] Page {pageNum} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
 
                 retry_bytes = _fetch_panel_image_gemini(adjusted_prompt, api_key, width=fetch_w, height=fetch_h)
@@ -1291,4 +1300,4 @@ def _build_initial_seed():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=True, host="0.0.0.0", port=port) 
+    app.run(debug=True, host="0.0.0.0", port=port)
