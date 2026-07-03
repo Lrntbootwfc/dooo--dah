@@ -139,6 +139,8 @@ Analyze the entry and extract:
 3. The key characters present in the story (including their role, gender, age if mentioned).
 4. The key locations mentioned.
 5. Important chronologically ordered events.
+6. VISUAL SYMBOLS: for each important event, list the concrete physical objects/props/decorations that would visually communicate that event to someone who can't read the words. Think like a set designer, not a literal transcriber. Examples: "It's my sister's birthday" -> ["birthday cake with candles", "balloons", "wrapped gift boxes", "party streamers"]. "I finally finished my project at 2am" -> ["laptop glowing in dark room", "empty coffee cups", "messy desk"]. "We went for a long drive" -> ["car dashboard", "open road", "sunset through windshield"].
+7. MEDIA REFERENCES: scan for any mention of a specific movie, TV show, book, game, band, or other named media/brand (e.g. "Friends", "Stranger Things", "Harry Potter", "Minecraft"). For each one, do NOT treat it as a literal group of people or an object — instead describe a GENERIC, non-copyrighted way to depict "someone experiencing that kind of media" (e.g. for a TV show: "a glowing television screen viewed from behind a couch, cozy blanket, remote control, dim room lighting" — never the show's actual characters, logos, or title text). If no media is mentioned, return an empty list.
 
 Respond ONLY with valid JSON (no markdown block, no '```json' wrapper):
 {{
@@ -148,7 +150,11 @@ Respond ONLY with valid JSON (no markdown block, no '```json' wrapper):
     {{"id": "C1", "role": "Narrator/Protagonist", "gender": "female", "age": "20"}}
   ],
   "locations": ["Cafe", "Road", "Home"],
-  "important_events": ["Met my best friend", "She hugged me", "Walking home", "Remembered grandfather"]
+  "important_events": ["Met my best friend", "She hugged me", "Walking home", "Remembered grandfather"],
+  "visual_symbols": ["falling autumn leaves", "two coffee cups", "warm string lights"],
+  "media_references": [
+    {{"mentioned_as": "Friends", "type": "TV show", "safe_generic_depiction": "a glowing TV screen glimpsed from behind a cozy couch in a dim living room, remote control on a cushion, blanket draped over the arm"}}
+  ]
 }}"""
     try:
         res = requests.post(url,
@@ -166,8 +172,11 @@ Respond ONLY with valid JSON (no markdown block, no '```json' wrapper):
         "emotion_curve": [mood],
         "characters": [{"id": "C1", "role": "Narrator"}],
         "locations": ["Unspecified"],
-        "important_events": ["Diary events occurred"]
+        "important_events": ["Diary events occurred"],
+        "visual_symbols": [],
+        "media_references": []
     }
+
 
 
 # ── 2. Agent 2: Comic Director / Storyboard AI ────────────────────────────────
@@ -182,6 +191,11 @@ STORY UNDERSTANDING (from Agent 1):
 {json.dumps(story_analysis, indent=2)}
 
 Create exactly 1 comic page (page_number {page_num}) with exactly 1 continuous narrative splash panel (panel_number 1) that represents the entire journal entry in a beautiful storytelling flow. This single image should depict the overall journey, mood, setting, and key characters of the whole story in one fluid composition.
+
+CRITICAL — GROUNDING RULES:
+- Use STORY UNDERSTANDING's "visual_symbols" list as concrete objects/props to physically include in the scene wherever they match the events being depicted (e.g. if a birthday is mentioned and "birthday cake with candles" is a visual symbol, the cake MUST appear in visual_details).
+- If STORY UNDERSTANDING's "media_references" list is non-empty, you MUST use each entry's "safe_generic_depiction" text verbatim (or near-verbatim) in visual_details instead of inventing your own interpretation of the referenced show/movie/game name. NEVER depict the actual characters, logos, or title text of any named show/movie/book/game — always the generic safe depiction provided.
+- Do not interpret common words as their literal dictionary meaning when they are clearly part of a proper noun or reference (e.g. "Friends" the TV show is not a group of platonic friends; "Stranger Things" is not a strange object).
 
 For this single panel, decide:
 - PANEL_NUMBER (must be 1)
@@ -370,13 +384,49 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_pan
         f"{char_ref_str} "
         f"Scene and background: {setting}. Lighting: {lighting}. Mood: {mood}. "
         f"Action / story arc: {action}. Character expressions: {expressions}. "
-        f"Visual details: {visual_details}. "
+        f"Visual details and props to include: {visual_details}. "
+        f"If any named movie, TV show, book, game, or brand is referenced anywhere above, do NOT depict its "
+        f"actual characters, logos, or title text — depict only a generic scene of someone experiencing that "
+        f"kind of media (e.g. a glowing screen, a book held open, a game controller), and do not take proper "
+        f"nouns literally as their dictionary meaning. "
         f"LEAVE EMPTY WHITE SPACE at the very top (15% of image) for caption text overlay. "
         f"NO speech bubbles, NO text, NO words, NO letters anywhere in the image. "
         f"Style: {color_style}, clean illustration, detailed expressive background, "
         f"professional wholesome webtoon/manga-inspired art, highly detailed character faces. "
         f"NEVER scary or horrific."
     )
+
+def _fetch_panel_image_gemini(prompt, api_key, width=768, height=800):
+    """Generate a scene image using Gemini's native image model (gemini-2.5-flash-image, aka 'Nano Banana').
+    This shares the same reasoning/world-knowledge as the text agents, so it handles semantic
+    context (e.g. 'birthday' -> cake, 'watched Friends' -> generic TV scene, not literal people)
+    far better than a plain diffusion model. Returns raw PNG bytes or None on failure."""
+    if not api_key or api_key in ("", "MY_GEMINI_API_KEY"):
+        return None
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={api_key}"
+    aspect = "3:4" if height > width else ("4:3" if width > height else "1:1")
+    try:
+        res = requests.post(url,
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["TEXT", "IMAGE"],
+                    "imageConfig": {"aspectRatio": aspect}
+                }
+            },
+            timeout=45)
+        if res.status_code == 200:
+            parts = res.json()["candidates"][0]["content"]["parts"]
+            for part in parts:
+                inline = part.get("inlineData") or part.get("inline_data")
+                if inline and inline.get("data"):
+                    return base64.b64decode(inline["data"])
+        else:
+            print(f"[Gemini Image] status={res.status_code} body={res.text[:300]}")
+    except Exception as e:
+        print(f"[Gemini Image] error: {e}")
+    return None
+
 
 def _fetch_panel_image(prompt, seed, retries=3, width=256, height=256):
     """Fetch a single scene image at the requested resolution, with retry and jitter."""
@@ -867,9 +917,17 @@ def render_comic_pages():
         fetch_w, fetch_h = (768, 800) if is_single else (256, 256)
         prompt = _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_panel=is_single)
         seed   = base_seed + pageNum * 100 + pi
-        
-        # Initial generation (with up to 3 retries)
-        img_bytes = _fetch_panel_image(prompt, seed, retries=3, width=fetch_w, height=fetch_h)
+
+        # Prefer Gemini's native image model — same API key, and it actually understands the
+        # story semantics (birthdays, referenced shows, etc.) instead of just keyword-matching.
+        img_bytes = _fetch_panel_image_gemini(prompt, api_key, width=fetch_w, height=fetch_h)
+        used_backend = "gemini" if img_bytes else None
+
+        # Fall back to Pollinations if Gemini image gen is unavailable/failed (no key, quota, etc.)
+        if not img_bytes:
+            img_bytes = _fetch_panel_image(prompt, seed, retries=3, width=fetch_w, height=fetch_h)
+            if img_bytes:
+                used_backend = "pollinations"
         
         # If it failed, try with a simplified fallback prompt!
         if not img_bytes:
@@ -879,6 +937,8 @@ def render_comic_pages():
             setting = panel.get("setting", "")
             simple_prompt = f"Comic book illustration, {camera} shot. {action or setting or 'Scenic illustration'}. Style: {color_style}, clean illustration, NO text, NO speech bubbles."
             img_bytes = _fetch_panel_image(simple_prompt, seed + 1, retries=3, width=fetch_w, height=fetch_h)
+            if img_bytes:
+                used_backend = "pollinations_simplified"
         
         # Agent 4: Quality Check
         verdict_info = {"verdict": "PASS", "reason": "Bypassed verification (No Gemini key)"}
@@ -890,10 +950,16 @@ def render_comic_pages():
                 adj_advice = verdict_info.get("prompt_adjustment", "")
                 adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
                 print(f"[Quality Agent] Page {pageNum} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
-                
-                retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=3, width=fetch_w, height=fetch_h)
+
+                retry_bytes = _fetch_panel_image_gemini(adjusted_prompt, api_key, width=fetch_w, height=fetch_h)
+                retry_backend = "gemini" if retry_bytes else None
+                if not retry_bytes:
+                    retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=3, width=fetch_w, height=fetch_h)
+                    if retry_bytes:
+                        retry_backend = "pollinations"
                 if retry_bytes:
                     img_bytes = retry_bytes
+                    used_backend = retry_backend
                     verdict_info["verdict"] = "PASS"
                     verdict_info["reason"] = f"Regenerated successfully on retry. Previous issue: {verdict_info.get('reason')}"
         
@@ -902,7 +968,8 @@ def render_comic_pages():
             "panel_idx": pi,
             "img_bytes": img_bytes,
             "verdict_info": verdict_info,
-            "prompt_used": prompt
+            "prompt_used": prompt,
+            "image_backend": used_backend
         }
 
     # Run tasks in parallel
@@ -954,21 +1021,24 @@ def render_comic_pages():
                 img_bytes = p_res["img_bytes"]
                 verdict_info = p_res["verdict_info"]
                 prompt = p_res["prompt_used"]
+                backend = p_res.get("image_backend", "unknown")
             else:
                 img_bytes = None
                 verdict_info = {"verdict": "FAIL", "reason": "Parallel worker failed to return result"}
                 prompt = ""
+                backend = "none"
 
             quality_logs.append({
                 "page": page_num,
                 "panel": pi + 1,
                 "verdict": verdict_info.get("verdict", "PASS"),
                 "reason": verdict_info.get("reason", "Passed inspection"),
-                "prompt_used": prompt
+                "prompt_used": prompt,
+                "image_backend": backend
             })
             
             panel_images.append(img_bytes)
-            print(f"[Comic v3] Page {page_num} Panel {pi+1}: {'OK' if img_bytes else 'FALLBACK'}")
+            print(f"[Comic v3] Page {page_num} Panel {pi+1}: {'OK (' + backend + ')' if img_bytes else 'FALLBACK'}")
 
         # ── Step 5: Layout Engine Compositing ─────────────────────────────
         try:
@@ -1216,9 +1286,9 @@ def verify_messenger_otp():
 
 def _build_initial_seed():
     return [{"id":"fold_seed_1","type":"folder","name":"Comic Diary Logs 📒","children":[
-        {"id":"file_seed_1","type":"file","name":"Inaugural Entry","content":"Welcome!", 
+        {"id":"file_seed_1","type":"file","name":"Inaugural Entry","content":"Welcome!",
          "mood":"😊","created":"6/27/2026","edited":"6/27/2026","comic":"","stickers":[],"characters":[]}]}]
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    app.run(debug=True, host="0.0.0.0", port=port) 
