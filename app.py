@@ -324,7 +324,7 @@ Respond ONLY with a valid JSON block of this structure:
 
 
 # ── 5. Pollinations: fetch ONE panel image ────────────────────────────────────
-def _build_panel_scene_prompt(panel, character_sheet, color_style):
+def _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_panel=False):
     """Build a prompt for JUST the scene — no speech bubbles, no text, leave whitespace at top."""
     setting         = panel.get("setting", "")
     camera          = panel.get("camera", "Medium Shot")
@@ -352,23 +352,38 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style):
 
     char_ref_str = ". ".join(char_refs) if char_refs else "Cute characters present."
 
+    if is_single_panel:
+        flow_directive = (
+            f"This is ONE single flowing illustration that tells the ENTIRE story of the diary entry "
+            f"from beginning to end, like a beautifully composed storybook spread or graphic-novel splash page. "
+            f"Compose it so the eye travels through the story: use foreground/midground/background layering, "
+            f"a winding path, changing light, or repeated smaller figures of the SAME characters at different "
+            f"moments to imply passage of time and the journey of events — all blended seamlessly into one "
+            f"cohesive scene, NOT a grid, NOT separate boxes. Every character that appears must keep the exact "
+            f"same face, hairstyle, and outfit described below in every part of the composition. "
+        )
+    else:
+        flow_directive = ""
+
     return (
-        f"Comic book panel art, {camera} shot. {char_ref_str} "
+        f"Comic book illustration, {camera} shot. {flow_directive}"
+        f"{char_ref_str} "
         f"Scene and background: {setting}. Lighting: {lighting}. Mood: {mood}. "
-        f"Action: {action}. Character expressions: {expressions}. "
+        f"Action / story arc: {action}. Character expressions: {expressions}. "
         f"Visual details: {visual_details}. "
         f"LEAVE EMPTY WHITE SPACE at the very top (15% of image) for caption text overlay. "
-        f"NO speech bubbles, NO text, NO words anywhere in the image. "
-        f"Style: {color_style}, clean comic book illustration, detailed expressive background, "
-        f"professional manga-inspired panel art. NEVER scary or horrific."
+        f"NO speech bubbles, NO text, NO words, NO letters anywhere in the image. "
+        f"Style: {color_style}, clean illustration, detailed expressive background, "
+        f"professional wholesome webtoon/manga-inspired art, highly detailed character faces. "
+        f"NEVER scary or horrific."
     )
 
-def _fetch_panel_image(prompt, seed, retries=3):
-    """Fetch a single panel scene image — 256x255 for individual panels with retry and jitter."""
+def _fetch_panel_image(prompt, seed, retries=3, width=256, height=256):
+    """Fetch a single scene image at the requested resolution, with retry and jitter."""
     encoded = requests.utils.quote(prompt)
     for attempt in range(retries):
         current_seed = seed + attempt
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=256&height=256&nologo=true&seed={current_seed}"
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&seed={current_seed}"
         try:
             resp = requests.get(url, timeout=60)
             if resp.status_code == 200 and len(resp.content) > 2000:
@@ -402,7 +417,8 @@ def _wrap_text(text, font, max_width, draw):
 
 # ── 4. Bubble drawers ─────────────────────────────────────────────────────────
 def _draw_speech_bubble(draw, cx, cy, text, font, bubble_type="speech",
-                         max_w=160, fg=(20,20,20), bg=(255,255,255), border=(20,20,20)):
+                         max_w=160, fg=(20,20,20), bg=(255,255,255), border=(20,20,20),
+                         canvas_w=840, canvas_h=876):
     """Draw a speech/thought/shout bubble centred near (cx, cy).
     Returns the bounding box (x0,y0,x1,y1) of the bubble."""
     padding  = 10
@@ -418,7 +434,7 @@ def _draw_speech_bubble(draw, cx, cy, text, font, bubble_type="speech",
     bh = txt_h + padding * 2
 
     # Position bubble so it doesn't go off canvas
-    img_w, img_h = (840, 876)
+    img_w, img_h = canvas_w, canvas_h
     x0 = max(4, min(cx - bw//2, img_w - bw - 4))
     y0 = max(4, cy)
     x1 = x0 + bw
@@ -591,7 +607,8 @@ def _composite_page(panel_images_bytes, panels_meta, page_num, total_pages, colo
                     max_w=min(180, PANEL_W - 20),
                     fg=(10,10,10),
                     bg=(255,255,255) if btype != "shout" else (255,255,180),
-                    border=(10,10,10)
+                    border=(10,10,10),
+                    canvas_w=page_w, canvas_h=page_h
                 )
                 bubble_y_start += 10  # slight offset for next speaker
 
@@ -605,7 +622,8 @@ def _composite_page(panel_images_bytes, panels_meta, page_num, total_pages, colo
                 max_w=150,
                 fg=(40,40,100),
                 bg=(230,230,255),
-                border=(100,100,180)
+                border=(100,100,180),
+                canvas_w=page_w, canvas_h=page_h
             )
 
     return page
@@ -834,7 +852,8 @@ def render_comic_pages():
             tasks.append({
                 "page_num": page_num,
                 "panel_idx": pi,
-                "panel": panel
+                "panel": panel,
+                "is_single_panel": len(panels) == 1
             })
 
     # Worker function to run fetch + optional Agent 4 Quality Check for a single panel
@@ -842,11 +861,15 @@ def render_comic_pages():
         pageNum = task["page_num"]
         pi = task["panel_idx"]
         panel = task["panel"]
-        prompt = _build_panel_scene_prompt(panel, character_sheet, color_style)
+        is_single = task.get("is_single_panel", False)
+        # Single-panel "whole story flow" images render big (see _composite_page), so fetch at a
+        # matching high resolution instead of a tiny 256x256 stretched up and blurred.
+        fetch_w, fetch_h = (768, 800) if is_single else (256, 256)
+        prompt = _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_panel=is_single)
         seed   = base_seed + pageNum * 100 + pi
         
         # Initial generation (with up to 3 retries)
-        img_bytes = _fetch_panel_image(prompt, seed, retries=3)
+        img_bytes = _fetch_panel_image(prompt, seed, retries=3, width=fetch_w, height=fetch_h)
         
         # If it failed, try with a simplified fallback prompt!
         if not img_bytes:
@@ -854,8 +877,8 @@ def render_comic_pages():
             camera = panel.get("camera", "Medium Shot")
             action = panel.get("action", "")
             setting = panel.get("setting", "")
-            simple_prompt = f"Comic book panel art, {camera} shot. {action or setting or 'Scenic illustration'}. Style: {color_style}, clean comic book illustration, NO text, NO speech bubbles."
-            img_bytes = _fetch_panel_image(simple_prompt, seed + 1, retries=3)
+            simple_prompt = f"Comic book illustration, {camera} shot. {action or setting or 'Scenic illustration'}. Style: {color_style}, clean illustration, NO text, NO speech bubbles."
+            img_bytes = _fetch_panel_image(simple_prompt, seed + 1, retries=3, width=fetch_w, height=fetch_h)
         
         # Agent 4: Quality Check
         verdict_info = {"verdict": "PASS", "reason": "Bypassed verification (No Gemini key)"}
@@ -868,7 +891,7 @@ def render_comic_pages():
                 adjusted_prompt = f"{prompt}. Details check: {adj_advice}" if adj_advice else prompt
                 print(f"[Quality Agent] Page {pageNum} Panel {pi+1} REGENERATE request: {verdict_info.get('reason')}")
                 
-                retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=3)
+                retry_bytes = _fetch_panel_image(adjusted_prompt, seed + 99, retries=3, width=fetch_w, height=fetch_h)
                 if retry_bytes:
                     img_bytes = retry_bytes
                     verdict_info["verdict"] = "PASS"
@@ -905,7 +928,7 @@ def render_comic_pages():
         for pi in range(len(panels)):
             p_res = results_map.get(page_num, {}).get(pi)
             if not p_res or not p_res.get("img_bytes"):
-                retry_tasks.append({"page_num": page_num, "panel_idx": pi, "panel": panels[pi]})
+                retry_tasks.append({"page_num": page_num, "panel_idx": pi, "panel": panels[pi], "is_single_panel": len(panels) == 1})
 
     if retry_tasks:
         print(f"[Retry Pass] {len(retry_tasks)} panels missing images, retrying...")
@@ -1193,7 +1216,7 @@ def verify_messenger_otp():
 
 def _build_initial_seed():
     return [{"id":"fold_seed_1","type":"folder","name":"Comic Diary Logs 📒","children":[
-        {"id":"file_seed_1","type":"file","name":"Inaugural Entry","content":"Welcome!",
+        {"id":"file_seed_1","type":"file","name":"Inaugural Entry","content":"Welcome!", 
          "mood":"😊","created":"6/27/2026","edited":"6/27/2026","comic":"","stickers":[],"characters":[]}]}]
 
 if __name__ == "__main__":
