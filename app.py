@@ -2,7 +2,7 @@ import os, json, base64, sqlite3, hashlib, random, requests, smtplib
 import traceback, time, textwrap, math, io
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from PIL import Image, ImageDraw, ImageFont
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -77,6 +77,10 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS otp_verifications (
         target TEXT PRIMARY KEY, otp_code TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS comic_pages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT, file_id TEXT, page_number INTEGER,
+        filename TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     try:
         c.execute("ALTER TABLE users ADD COLUMN global_alignments TEXT DEFAULT '{}'")
     except sqlite3.OperationalError:
@@ -180,7 +184,7 @@ Respond ONLY with valid JSON (no markdown block, no '```json' wrapper):
 
 
 # ── 2. Agent 2: Comic Director / Storyboard AI ────────────────────────────────
-def _run_agent_comic_director_single_page(api_key, content, story_analysis, page_num, total_pages, prior_events_summary):
+def _run_agent_comic_director_single_page(api_key, content, story_analysis, page_num, total_pages, prior_events_summary, panel_count=1):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     prompt = f"""You are 'Agent 2: Comic Director / Storyboard AI'. You think like a movie director and professional storyboard artist.
     
@@ -190,48 +194,49 @@ ORIGINAL DIARY ENTRY:
 STORY UNDERSTANDING (from Agent 1):
 {json.dumps(story_analysis, indent=2)}
 
-Create exactly 1 comic page (page_number {page_num}) with exactly 1 continuous narrative splash panel (panel_number 1) that represents the entire journal entry in a beautiful storytelling flow. This single image should depict the overall journey, mood, setting, and key characters of the whole story in one fluid composition.
+Create exactly 1 comic page (page_number {page_num}) with exactly {panel_count} sequential panels (panel_number 1 to {panel_count}) that together tell the entire journal entry as a beautiful flowing sequence — like consecutive moments/beats in a storybook, read top to bottom. Each panel should cover a distinct moment or beat of the story, in chronological order, so that together they form the complete arc.
 
 CRITICAL — GROUNDING RULES:
-- Use STORY UNDERSTANDING's "visual_symbols" list as concrete objects/props to physically include in the scene wherever they match the events being depicted (e.g. if a birthday is mentioned and "birthday cake with candles" is a visual symbol, the cake MUST appear in visual_details).
-- If STORY UNDERSTANDING's "media_references" list is non-empty, you MUST use each entry's "safe_generic_depiction" text verbatim (or near-verbatim) in visual_details instead of inventing your own interpretation of the referenced show/movie/game name. NEVER depict the actual characters, logos, or title text of any named show/movie/book/game — always the generic safe depiction provided.
+- Use STORY UNDERSTANDING's "visual_symbols" list as concrete objects/props to physically include in the relevant panel(s) (e.g. if a birthday is mentioned and "birthday cake with candles" is a visual symbol, the cake MUST appear in that panel's visual_details).
+- If STORY UNDERSTANDING's "media_references" list is non-empty, you MUST use each entry's "safe_generic_depiction" text verbatim (or near-verbatim) in the relevant panel's visual_details instead of inventing your own interpretation of the referenced show/movie/game name. NEVER depict the actual characters, logos, or title text of any named show/movie/book/game — always the generic safe depiction provided.
 - Do not interpret common words as their literal dictionary meaning when they are clearly part of a proper noun or reference (e.g. "Friends" the TV show is not a group of platonic friends; "Stranger Things" is not a strange object).
+- Distribute the story's distinct events across the {panel_count} panels roughly evenly and in the order they happened — do not cram everything into panel 1.
 
-For this single panel, decide:
-- PANEL_NUMBER (must be 1)
+For each panel, decide:
+- PANEL_NUMBER (1 to {panel_count})
 - CAMERA: camera angle (e.g. "Wide Shot", "Medium Shot", "Bird's Eye View")
 - SETTING: background location, time of day, lighting, environment details FROM THE USER'S DIARY ENTRY
-- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"]) representing the characters actually in this scene
-- CHARACTER_EXPRESSIONS: expression of each present character representing their feelings in this story
-- ACTION: physical action taking place in the scene that summarizes the story flow of this diary entry
-- VISUAL_DETAILS: key visual items, objects, or details to draw that show the story's flow
+- CHARACTERS_PRESENT: list of strings (e.g., ["Narrator", "Best Friend"]) representing the characters actually in this beat
+- CHARACTER_EXPRESSIONS: expression of each present character representing their feelings at this moment
+- ACTION: the physical action/moment taking place in this specific beat of the story
+- VISUAL_DETAILS: key visual items, objects, or props to draw for this specific beat
 - DIALOGUE: list of dialogue objects with speaker and text or empty list if none
 - INNER_THOUGHT: string of thought bubble text, or empty string if none
-- CAPTION: short narrative text (max 18 words) summarizing the essence of the entire journal entry
+- CAPTION: short narrative text (max 14 words) for this specific beat
 - BUBBLE_TYPE: "speech" | "thought" | "shout" | "whisper" | "none"
-- MOOD: overall emotional mood of the story
-- LIGHTING: lighting condition
+- MOOD: emotional mood of this beat
+- LIGHTING: lighting condition for this beat
 
-CRITICAL DIRECTIVE: Do NOT use the example values of "Cozy room with warm lights" or "Writing down today's adventure". You MUST extract and use the ACTUAL setting, characters, action, and mood directly from the provided ORIGINAL DIARY ENTRY and STORY UNDERSTANDING.
+CRITICAL DIRECTIVE: Do NOT use generic placeholder values. You MUST extract and use the ACTUAL setting, characters, action, and mood directly from the provided ORIGINAL DIARY ENTRY and STORY UNDERSTANDING, split sensibly across the {panel_count} panels in chronological order.
 
-Respond ONLY with valid JSON using this exact structure (no markdown wrappers, no ```json formatting, just raw JSON):
+Respond ONLY with valid JSON using this exact structure (no markdown wrappers, no ```json formatting, just raw JSON — provide exactly {panel_count} objects in the "panels" array):
 {{
   "page_number": {page_num},
   "panels": [
     {{
       "panel_number": 1,
-      "camera": "<camera_angle_e.g_Wide_Shot>",
-      "setting": "<dynamic_setting_from_diary>",
-      "characters_present": ["<character1_from_diary>", "<character2_from_diary>"],
-      "character_expressions": "<dynamic_expressions_representing_characters_emotions_in_diary>",
-      "action": "<dynamic_action_from_diary_showing_the_core_story_moment>",
-      "visual_details": "<dynamic_visual_details_such_as_clothing_and_objects_from_diary>",
+      "camera": "<camera_angle>",
+      "setting": "<setting_for_this_beat>",
+      "characters_present": ["<character1>", "<character2>"],
+      "character_expressions": "<expressions_for_this_beat>",
+      "action": "<action_for_this_beat>",
+      "visual_details": "<props_for_this_beat>",
       "dialogue": [],
-      "inner_thought": "<thought_from_diary_or_empty>",
-      "caption": "<dynamic_narrative_caption_box_text_max_18_words_summarizing_this_moment>",
+      "inner_thought": "<thought_or_empty>",
+      "caption": "<caption_max_14_words>",
       "bubble_type": "none",
-      "mood": "<dynamic_mood_from_diary>",
-      "lighting": "<dynamic_lighting_from_diary_setting>"
+      "mood": "<mood_for_this_beat>",
+      "lighting": "<lighting_for_this_beat>"
     }}
   ]
 }}"""
@@ -343,6 +348,60 @@ Respond ONLY with a valid JSON block of this structure:
     return {"verdict": "PASS", "reason": "Bypassed quality check", "prompt_adjustment": ""}
 
 
+def _run_agent_quality_check_full_page(api_key, img_bytes, panels_meta):
+    """Same idea as _run_agent_quality_check, but checks ONE image against ALL panels'
+    required content at once, since a multi-panel page is now generated in a single call."""
+    if not img_bytes or len(img_bytes) < 2000:
+        return {"verdict": "REGENERATE", "reason": "No valid image data generated", "prompt_adjustment": "Make the layout simpler"}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+    panel_summaries = []
+    for i, p in enumerate(panels_meta, start=1):
+        props = p.get("visual_details", p.get("visual_elements", "")) or "none specified"
+        panel_summaries.append(f"Panel {i}: action='{p.get('action','')}', required props='{props}'")
+    panels_block = "\n".join(panel_summaries)
+
+    prompt = f"""You are 'Agent 4: Quality Assurance Agent'. This image is meant to contain {len(panels_meta)} distinct sequential panels stacked top-to-bottom, generated in a single call. Verify CONTENT ACCURACY across all of them.
+
+EXPECTED PANELS:
+{panels_block}
+
+Check the image for:
+1. CONTENT ACCURACY (most important): does the image actually show roughly {len(panels_meta)} distinct panels/moments, and does each panel's required props/objects actually appear? If most required props are missing, this MUST be REGENERATE.
+2. Does it correctly avoid depicting any named/copyrighted show, movie, game, or brand's actual characters or logos?
+3. Visual glitches (extra fingers/arms, distorted faces).
+4. Does it contain any AI-drawn text or speech bubbles? (There must be none — text is overlaid digitally afterward).
+
+Be strict about #1 — a clean, glitch-free image that is missing most of its required panel props is still a FAIL.
+
+Respond ONLY with a valid JSON block:
+{{
+  "verdict": "PASS" | "REGENERATE",
+  "reason": "Detailed observation, explicitly naming any missing panel or prop",
+  "prompt_adjustment": "If REGENERATE, an adjustment re-emphasizing what's missing, else empty string"
+}}"""
+    try:
+        res = requests.post(url,
+            json={
+                "contents": [
+                    {"parts": [
+                        {"text": prompt},
+                        {"inlineData": {"mimeType": "image/png", "data": img_b64}}
+                    ]}
+                ],
+                "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+            },
+            timeout=25)
+        if res.status_code == 200:
+            raw = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            raw = raw.replace("```json","").replace("```","").strip()
+            return json.loads(raw)
+    except Exception as e:
+        print(f"[Agent 4 Full-Page Quality check error]: {e}")
+    return {"verdict": "PASS", "reason": "Bypassed quality check", "prompt_adjustment": ""}
+
+
 # ── 5. Pollinations: fetch ONE panel image ────────────────────────────────────
 def _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_panel=False):
     """Build a prompt for JUST the scene — no speech bubbles, no text, leave whitespace at top."""
@@ -395,7 +454,8 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_pan
     style_and_rules = (
         f"{flow_directive}"
         f"Camera framing: {camera} shot. "
-        f"Art style: {color_style}, clean illustration, wholesome webtoon/manga-inspired, highly detailed faces, never scary. "
+        f"Art style: {color_style}, clean illustration, wholesome webtoon/manga-inspired, highly detailed faces, "
+        f"masterpiece quality, polished linework, rich color grading, sharp focus, never scary. "
         f"If any named movie, TV show, book, game, or brand is referenced in the props/action above, do NOT draw its "
         f"actual characters, logos, or title text — draw only a generic scene of someone experiencing that kind of "
         f"media instead, and never interpret a proper noun as its ordinary dictionary meaning. "
@@ -404,6 +464,57 @@ def _build_panel_scene_prompt(panel, character_sheet, color_style, is_single_pan
     )
 
     return f"{core_content}{style_and_rules}"
+
+
+def _build_full_page_prompt(panels, character_sheet, color_style):
+    """Build ONE prompt describing an entire multi-panel page, so it can be generated
+    with a single Gemini image call instead of one fetch per panel."""
+    n = len(panels)
+
+    # Gather all characters across all panels once, for a consistent reference block
+    all_names = []
+    for p in panels:
+        for cname in p.get("characters_present", []):
+            if cname not in all_names:
+                all_names.append(cname)
+    char_refs = []
+    for cname in all_names:
+        profile = character_sheet.get(cname, "")
+        if not profile:
+            for sname, sprofile in character_sheet.items():
+                if sname.lower() in cname.lower() or cname.lower() in sname.lower():
+                    profile = sprofile
+                    break
+        char_refs.append(f"{cname}: {profile}" if profile else f"{cname}: a cute anime character.")
+    char_ref_str = " | ".join(char_refs) if char_refs else "Cute characters as needed."
+
+    # Lead with the concrete per-panel content — this is what matters most
+    beat_lines = []
+    for i, p in enumerate(panels, start=1):
+        chars = ", ".join(p.get("characters_present", [])) or "no one specific"
+        beat_lines.append(
+            f"PANEL {i} of {n}: {p.get('action','')}. Setting: {p.get('setting','')}. "
+            f"Characters in this panel: {chars} ({p.get('character_expressions','')}). "
+            f"Props that MUST be visible in this panel: {p.get('visual_details','')}. "
+            f"Lighting/mood: {p.get('lighting','')}, {p.get('mood','')}."
+        )
+    beats_block = " ".join(beat_lines)
+
+    style_and_rules = (
+        f"Arrange these into exactly {n} clear panels stacked top-to-bottom in one single continuous "
+        f"illustration, in reading order (panel 1 at the top), with a thin clean divider line between "
+        f"each panel. Character reference sheet — every character MUST look exactly the same (same face, "
+        f"hair, outfit) in every panel they appear in: {char_ref_str} "
+        f"Leave empty white space at the top 12% of each panel for a caption overlay. "
+        f"Art style: {color_style}, clean illustration, wholesome webtoon/manga-inspired, highly detailed "
+        f"faces, masterpiece quality, polished linework, rich color grading, sharp focus, never scary. "
+        f"If any named movie, TV show, book, game, or brand is referenced in the props/action above, do NOT "
+        f"draw its actual characters, logos, or title text — draw only a generic scene of someone "
+        f"experiencing that kind of media instead, and never interpret a proper noun as its ordinary "
+        f"dictionary meaning. Absolutely no speech bubbles, no text, no words, no letters anywhere in the image."
+    )
+
+    return f"{beats_block} {style_and_rules}"
 
 def _fetch_panel_image_gemini(prompt, api_key, width=768, height=800):
     """Generate a scene image using Gemini's native image model (gemini-2.5-flash-image, aka 'Nano Banana').
@@ -564,6 +675,93 @@ def _draw_caption_box(draw, x0, y0, x1, text, font, bg=(0,0,0,200), fg=(255,255,
     return y0 + box_h
 
 
+# ── 5b. Composite a page from ONE already-generated full-page image (multi-panel, single fetch) ──
+def _composite_flow_page(full_page_img_bytes, panels_meta, page_num, total_pages, color_style):
+    """Takes ONE generated image meant to already contain N stacked panels, and overlays
+    captions/dialogue/thought bubbles at the corresponding vertical band for each panel.
+    Avoids re-fetching per panel — a single Gemini call already produced the whole page."""
+    n = max(1, len(panels_meta))
+    PANEL_W  = 780
+    BAND_H   = 380
+    MARGIN   = 20
+    HEADER_H = 36
+
+    page_w = MARGIN*2 + PANEL_W
+    page_h = MARGIN*2 + HEADER_H + n*BAND_H
+
+    page = Image.new("RGB", (page_w, page_h), (245, 238, 220))
+    draw = ImageDraw.Draw(page)
+    draw.rectangle([2, 2, page_w-3, page_h-3], outline=(30,20,10), width=3)
+
+    hfont = _font(FONT_BOLD, 13)
+    draw.rectangle([0, 0, page_w, HEADER_H], fill=(20, 20, 20))
+    draw.text((MARGIN, 10), f"PAGE {page_num} / {total_pages}", fill=(255, 200, 60), font=hfont)
+
+    caption_font  = _font(FONT_BOLD,   11)
+    dialogue_font = _font(FONT_BOLD,   13)
+    thought_font  = _font(FONT_ITALIC, 12)
+    whisper_font  = _font(FONT_ITALIC, 11)
+
+    content_top = MARGIN + HEADER_H
+    content_h   = n * BAND_H
+
+    if full_page_img_bytes:
+        try:
+            full_img = Image.open(io.BytesIO(full_page_img_bytes)).convert("RGB")
+            full_img = full_img.resize((PANEL_W, content_h), Image.LANCZOS)
+            page.paste(full_img, (MARGIN, content_top))
+        except Exception as e:
+            print(f"[Composite Flow] full page image error: {e}")
+            full_page_img_bytes = None
+
+    if not full_page_img_bytes:
+        for yy in range(content_h):
+            t  = yy / content_h
+            draw.line([(MARGIN, content_top+yy), (MARGIN+PANEL_W, content_top+yy)],
+                      fill=(int(180+40*t), int(160+30*t), int(200+20*t)))
+
+    draw.rectangle([MARGIN, content_top, MARGIN+PANEL_W, content_top+content_h], outline=(10,10,10), width=3)
+
+    for idx, panel in enumerate(panels_meta):
+        px, py = MARGIN, content_top + idx*BAND_H
+
+        # thin divider between bands (skip before the first)
+        if idx > 0:
+            draw.line([(px, py), (px+PANEL_W, py)], fill=(10,10,10), width=2)
+
+        caption = panel.get("caption", "")
+        caption_bottom = py
+        if caption:
+            caption_bottom = _draw_caption_box(draw, px, py, px+PANEL_W, caption, caption_font) or py
+
+        bubble_y_start = caption_bottom + 4
+        dialogues = panel.get("dialogue", [])
+        btype = panel.get("bubble_type", "speech")
+        if dialogues and btype != "none":
+            for di, dlg in enumerate(dialogues[:2]):
+                txt = dlg.get("text", "").strip()
+                if not txt: continue
+                bx = px + PANEL_W // 4 if di == 0 else px + (PANEL_W * 3) // 4
+                font_to_use = whisper_font if btype == "whisper" else dialogue_font
+                _draw_speech_bubble(
+                    draw, bx, bubble_y_start, txt, font_to_use, bubble_type=btype,
+                    max_w=min(220, PANEL_W - 40), fg=(10,10,10),
+                    bg=(255,255,255) if btype != "shout" else (255,255,180),
+                    border=(10,10,10), canvas_w=page_w, canvas_h=page_h
+                )
+                bubble_y_start += 10
+
+        inner = panel.get("inner_thought", "").strip()
+        if inner:
+            _draw_speech_bubble(
+                draw, px + PANEL_W - 100, bubble_y_start, inner, thought_font,
+                bubble_type="thought", max_w=170, fg=(40,40,100), bg=(230,230,255),
+                border=(100,100,180), canvas_w=page_w, canvas_h=page_h
+            )
+
+    return page
+
+
 # ── 5. Composite one full comic PAGE from panel images + metadata ─────────────
 def _composite_page(panel_images_bytes, panels_meta, page_num, total_pages, color_style):
     """
@@ -696,6 +894,35 @@ def _page_to_data_url(pil_image):
     return f"data:image/png;base64,{b64}"
 
 
+def _safe_slug(s):
+    s = (s or "anon").lower().strip()
+    return "".join(c if c.isalnum() or c in ("-","_") else "_" for c in s)[:64] or "anon"
+
+
+def _persist_comic_page(pil_image, username, file_id, page_num):
+    """Save the composited page permanently to disk + record it in the DB, so it survives
+    beyond the single response (previously only a base64 blob was returned and never stored)."""
+    try:
+        uslug = _safe_slug(username)
+        fslug = _safe_slug(file_id)
+        user_dir = os.path.join(COMICS_DIR, uslug)
+        os.makedirs(user_dir, exist_ok=True)
+        filename = f"{fslug}_page{page_num}.png"
+        filepath = os.path.join(user_dir, filename)
+        pil_image.save(filepath, format="PNG", optimize=True)
+
+        conn = _get_conn(); cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO comic_pages (username, file_id, page_number, filename) VALUES (?, ?, ?, ?)",
+            (uslug, fslug, page_num, f"{uslug}/{filename}")
+        )
+        conn.commit(); conn.close()
+        return f"/api/comics/{uslug}/{filename}"
+    except Exception as e:
+        print(f"[Persist Comic Page] error: {e}")
+        return None
+
+
 # ── 7. Character guidelines builder ──────────────────────────────────────────
 def _build_char_guidelines(avatar_desc, global_alignments, entry_characters):
     parts = []
@@ -728,27 +955,40 @@ def _estimate_pages(content):
     return 1
 
 
-def _fallback_storyboard(content, num_pages):
+def _estimate_panel_count(content):
+    """How many distinct story-beat panels should appear on the single page."""
+    words = len(content.split())
+    if words < 40:  return 2
+    if words < 100: return 3
+    return 4
+
+
+def _fallback_storyboard(content, num_pages, panel_count=1):
     """Simple sentence-split fallback when Gemini isn't available."""
     sentences = [s.strip() for s in content.replace("!",".").replace("?",".").split(".") if s.strip()]
+    total     = max(1, panel_count)
+    chunk     = max(1, len(sentences) // total) if sentences else 1
     pages     = []
     for p in range(num_pages):
-        summary_text = " ".join(sentences)[:120] if sentences else "A quiet, reflective moment."
-        panels = [{
-            "panel_number":        1,
-            "camera":              "Wide Shot",
-            "setting":             "A beautiful narrative setting reflecting the entry",
-            "characters_present":  ["Narrator"],
-            "character_expressions": "reflective",
-            "action":              summary_text,
-            "visual_details":      "gentle warm glows, cozy illustrative elements summarizing the journey",
-            "dialogue":            [],
-            "inner_thought":       "",
-            "caption":             summary_text[:80],
-            "bubble_type":         "none",
-            "mood":                "Peaceful",
-            "lighting":            "soft ambient glow"
-        }]
+        panels = []
+        for pn in range(total):
+            chunk_sentences = sentences[pn*chunk:(pn+1)*chunk] if sentences else []
+            text = " ".join(chunk_sentences)[:120] or "A quiet, reflective moment."
+            panels.append({
+                "panel_number":        pn + 1,
+                "camera":              "Wide Shot",
+                "setting":             "A beautiful narrative setting reflecting the entry",
+                "characters_present":  ["Narrator"],
+                "character_expressions": "reflective",
+                "action":              text,
+                "visual_details":      "gentle warm glows, cozy illustrative elements summarizing the moment",
+                "dialogue":            [],
+                "inner_thought":       "",
+                "caption":             text[:80],
+                "bubble_type":         "none",
+                "mood":                "Peaceful",
+                "lighting":            "soft ambient glow"
+            })
         pages.append({"page_number": p+1, "panels": panels})
     return pages
 
@@ -768,6 +1008,7 @@ def render_comic_pages():
     entry_characters  = data.get("entry_characters", [])
     avatar_desc       = data.get("avatar_desc", "")
     global_alignments = data.get("global_alignments", {})
+    file_id           = data.get("file_id") or (hashlib.md5(content.encode("utf-8")).hexdigest()[:12] if content else "entry")
 
     # Optional parameters for single page regeneration
     page_number_to_regen = data.get("page_number_to_regen")
@@ -860,13 +1101,13 @@ def render_comic_pages():
             
             page = None
             if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
-                page = _run_agent_comic_director_single_page(api_key, content, story_analysis, page_number_to_regen, num_pages, prior_summary)
+                page = _run_agent_comic_director_single_page(api_key, content, story_analysis, page_number_to_regen, num_pages, prior_summary, panel_count=_estimate_panel_count(content))
             
             if page and page.get("panels"):
                 page["_used_fallback"] = False
                 pages_data = [page]
             else:
-                fb_page = _fallback_storyboard(content, 1)[0]
+                fb_page = _fallback_storyboard(content, 1, panel_count=_estimate_panel_count(content))[0]
                 fb_page["page_number"] = page_number_to_regen
                 fb_page["_used_fallback"] = True
                 pages_data = [fb_page]
@@ -876,20 +1117,20 @@ def render_comic_pages():
             if api_key and api_key not in ("", "MY_GEMINI_API_KEY"):
                 prior_summary = ""
                 for pn in range(1, num_pages + 1):
-                    page = _run_agent_comic_director_single_page(api_key, content, story_analysis, pn, num_pages, prior_summary)
+                    page = _run_agent_comic_director_single_page(api_key, content, story_analysis, pn, num_pages, prior_summary, panel_count=_estimate_panel_count(content))
                     if page and page.get("panels"):
                         page["_used_fallback"] = False
                         pages_data.append(page)
                         prior_summary += f" Page {pn} covered: " + "; ".join(p.get("action","") for p in page.get("panels", []))
                     else:
                         print(f"[Comic Director] Page {pn} storyboard failed, using fallback page...")
-                        fb_page = _fallback_storyboard(content, 1)[0]
+                        fb_page = _fallback_storyboard(content, 1, panel_count=_estimate_panel_count(content))[0]
                         fb_page["page_number"] = pn
                         fb_page["_used_fallback"] = True
                         pages_data.append(fb_page)
             
             if not pages_data:
-                pages_data = _fallback_storyboard(content, num_pages)
+                pages_data = _fallback_storyboard(content, num_pages, panel_count=_estimate_panel_count(content))
 
     if page_number_to_regen is not None and existing_pages:
         total_pages = max(num_pages, len(existing_pages))
@@ -901,6 +1142,55 @@ def render_comic_pages():
     
     # Store Agent trace logs to send back to client
     quality_logs = []
+
+    # ── NEW: try to render multi-panel pages with ONE Gemini call instead of one fetch per panel ──
+    # Pages with only 1 panel keep going through the existing per-panel path below (unchanged).
+    flow_composited_pages = {}   # page_num -> (PIL.Image, panels list, used_fallback flag)
+    remaining_pages_data  = []   # pages that still need the old per-panel task loop
+
+    gemini_available = bool(api_key and api_key not in ("", "MY_GEMINI_API_KEY"))
+
+    for page_data in pages_data:
+        page_num = page_data.get("page_number")
+        panels   = page_data.get("panels", [])
+
+        if len(panels) > 1 and gemini_available:
+            full_prompt = _build_full_page_prompt(panels, character_sheet, color_style)
+            band_h = 380
+            full_img_bytes = _fetch_panel_image_gemini(full_prompt, api_key, width=780, height=min(1600, len(panels)*band_h))
+
+            if full_img_bytes:
+                verdict_info = _run_agent_quality_check_full_page(api_key, full_img_bytes, panels)
+                backend = "gemini_full_page"
+                if verdict_info.get("verdict") == "REGENERATE":
+                    adj = verdict_info.get("prompt_adjustment", "")
+                    adjusted = f"CRITICAL FIX REQUIRED: {adj}. Now generate: {full_prompt}" if adj else full_prompt
+                    print(f"[Full-Page QA] Page {page_num} REGENERATE: {verdict_info.get('reason')}")
+                    retry_bytes = _fetch_panel_image_gemini(adjusted, api_key, width=780, height=min(1600, len(panels)*band_h))
+                    if retry_bytes:
+                        full_img_bytes = retry_bytes
+                        verdict_info["verdict"] = "PASS"
+                        verdict_info["reason"] = f"Regenerated successfully. Previous issue: {verdict_info.get('reason')}"
+
+                quality_logs.append({
+                    "page": page_num, "panel": "all", "verdict": verdict_info.get("verdict", "PASS"),
+                    "reason": verdict_info.get("reason", "Passed inspection"),
+                    "prompt_used": full_prompt, "image_backend": backend
+                })
+                try:
+                    pil_page = _composite_flow_page(full_img_bytes, panels, page_num, len(pages_data), color_style)
+                    flow_composited_pages[page_num] = (pil_page, panels, page_data.get("_used_fallback", False))
+                    print(f"[Comic v5] Page {page_num}: composed via single full-page Gemini fetch ({len(panels)} panels)")
+                    continue
+                except Exception as e:
+                    print(f"[Full-Page Composite error] page {page_num}: {e}")
+                    # fall through to old per-panel path below
+
+            print(f"[Comic v5] Page {page_num}: full-page fetch failed, falling back to per-panel generation.")
+
+        remaining_pages_data.append(page_data)
+
+    pages_data = remaining_pages_data
 
     # Compile all panel tasks for parallel processing
     tasks = []
@@ -1019,6 +1309,32 @@ def render_comic_pages():
 
     # Reconstruct pages and composite
     newly_composited_pages = []
+
+    # First, the pages that were successfully done via a single full-page Gemini fetch
+    for page_num, (pil_page, panels, used_fb) in flow_composited_pages.items():
+        try:
+            data_url = _page_to_data_url(pil_page)
+            image_url = _persist_comic_page(pil_page, username, file_id, page_num)
+            fallback = False
+        except Exception as e:
+            print(f"[Flow Persist error] page {page_num}: {e}")
+            data_url = _svg_fallback(page_num, total_pages, mood)
+            image_url = None
+            fallback = True
+
+        newly_composited_pages.append({
+            "page_number":    page_num,
+            "image_data_url": data_url,
+            "image_url":      image_url,
+            "panels":         panels,
+            "panel_count":    len(panels),
+            "fallback":       fallback,
+            "used_storyboard_fallback": used_fb,
+            "panels_with_placeholder_image": 0,
+            "generation_mode": "single_fetch_multi_panel"
+        })
+
+    # Then, pages that went through the per-panel path (single-panel pages, or fallback from above)
     for page_data in pages_data:
         page_num = page_data.get("page_number")
         panels   = page_data.get("panels", [])
@@ -1053,22 +1369,28 @@ def render_comic_pages():
         try:
             pil_page = _composite_page(panel_images, panels, page_num, total_pages, color_style)
             data_url = _page_to_data_url(pil_page)
+            image_url = _persist_comic_page(pil_page, username, file_id, page_num)
             fallback = False
         except Exception as e:
             print(f"[Composite error] page {page_num}: {e}")
             traceback.print_exc()
             data_url = _svg_fallback(page_num, total_pages, mood)
+            image_url = None
             fallback = True
 
         newly_composited_pages.append({
             "page_number":    page_num,
             "image_data_url": data_url,
+            "image_url":      image_url,
             "panels":         panels,
             "panel_count":    len(panels),
             "fallback":       fallback,
             "used_storyboard_fallback": page_data.get("_used_fallback", False),
             "panels_with_placeholder_image": sum(1 for img in panel_images if not img),
+            "generation_mode": "per_panel_fetch"
         })
+
+    newly_composited_pages.sort(key=lambda p: p["page_number"])
 
     if page_number_to_regen is not None and existing_pages:
         # Merge newly regenerated page into existing pages list
@@ -1117,6 +1439,30 @@ def _svg_fallback(page_num, total_pages, mood):
   <text x="410" y="545" font-family="sans-serif" font-size="13" text-anchor="middle" fill="#888">Please retry — Pollinations may be busy</text>
 </svg>'''
     return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+# ─── Serve permanently stored comic page images ──────────────────────────────
+@app.route("/api/comics/<username>/<filename>", methods=["GET"])
+def serve_comic_page(username, filename):
+    uslug = _safe_slug(username)
+    fname = os.path.basename(filename)  # strip any path traversal attempt
+    user_dir = os.path.join(COMICS_DIR, uslug)
+    return send_from_directory(user_dir, fname, mimetype="image/png")
+
+
+@app.route("/api/comics/<username>", methods=["GET"])
+def list_comic_pages(username):
+    uslug = _safe_slug(username)
+    conn = _get_conn(); cursor = conn.cursor()
+    cursor.execute(
+        "SELECT file_id, page_number, filename, created_at FROM comic_pages WHERE username=? ORDER BY created_at DESC",
+        (uslug,)
+    )
+    rows = cursor.fetchall(); conn.close()
+    return jsonify({"status": "Success", "pages": [
+        {"file_id": r[0], "page_number": r[1], "url": f"/api/comics/{r[2]}", "created_at": r[3]}
+        for r in rows
+    ]})
 
 
 # ─── Legacy single-page endpoint (kept for backward compat) ──────────────────
