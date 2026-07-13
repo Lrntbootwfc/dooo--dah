@@ -64,32 +64,84 @@ MAX_PANELS_PER_PAGE = 4
 MAX_PAGES           = 6
 
 # ─── DATABASE ────────────────────────────────────────────────────────────────
+# If DATABASE_URL is set (e.g. a free Supabase Postgres connection string), everything —
+# accounts, diary entries, AND generated comic images (stored as base64 in a DB column) —
+# lives there permanently, surviving redeploys. Without it, falls back to local SQLite +
+# local disk, which is fine for local dev but gets wiped on every Render redeploy.
+DATABASE_URL  = os.environ.get("DATABASE_URL", "").strip()
+USE_POSTGRES  = bool(DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg2
+    def _get_conn():
+        return psycopg2.connect(DATABASE_URL, sslmode="require")
+    def _q(sql):
+        return sql.replace("?", "%s")
+else:
+    def _get_conn():
+        return sqlite3.connect(DB_PATH, timeout=30.0)
+    def _q(sql):
+        return sql
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_conn()
     c    = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,
-        avatar_desc TEXT DEFAULT 'programmer in minimalist hoodie, sleek glasses',
-        global_alignments TEXT DEFAULT '{}')''')
-    c.execute('''CREATE TABLE IF NOT EXISTS file_systems (
-        username TEXT PRIMARY KEY, fs_tree_json TEXT NOT NULL,
-        FOREIGN KEY(username) REFERENCES users(username))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS otp_verifications (
-        target TEXT PRIMARY KEY, otp_code TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS comic_pages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT, file_id TEXT, page_number INTEGER,
-        filename TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN global_alignments TEXT DEFAULT '{}'")
-    except sqlite3.OperationalError:
-        pass
+    if USE_POSTGRES:
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,
+            avatar_desc TEXT DEFAULT 'programmer in minimalist hoodie, sleek glasses',
+            global_alignments TEXT DEFAULT '{}')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS file_systems (
+            username TEXT PRIMARY KEY, fs_tree_json TEXT NOT NULL,
+            FOREIGN KEY(username) REFERENCES users(username))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS otp_verifications (
+            target TEXT PRIMARY KEY, otp_code TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS comic_pages (
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT, file_id TEXT, page_number INTEGER,
+            filename TEXT NOT NULL, image_base64 TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS global_alignments TEXT DEFAULT '{}'")
+        c.execute("ALTER TABLE comic_pages ADD COLUMN IF NOT EXISTS image_base64 TEXT")
+    else:
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,
+            avatar_desc TEXT DEFAULT 'programmer in minimalist hoodie, sleek glasses',
+            global_alignments TEXT DEFAULT '{}')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS file_systems (
+            username TEXT PRIMARY KEY, fs_tree_json TEXT NOT NULL,
+            FOREIGN KEY(username) REFERENCES users(username))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS otp_verifications (
+            target TEXT PRIMARY KEY, otp_code TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS comic_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT, file_id TEXT, page_number INTEGER,
+            filename TEXT NOT NULL, image_base64 TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN global_alignments TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            c.execute("ALTER TABLE comic_pages ADD COLUMN image_base64 TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.commit(); conn.close()
+    print(f"[DB] Using {'Postgres (permanent, Supabase)' if USE_POSTGRES else 'local SQLite (ephemeral on Render)'}")
 
 init_db()
 
 def hash_password(p): return hashlib.sha256(p.encode()).hexdigest()
+
+def _is_unique_violation(e):
+    """Works for both sqlite3.IntegrityError and psycopg2's UniqueViolation without
+    needing a conditional import of psycopg2 when it isn't installed (SQLite mode)."""
+    if USE_POSTGRES:
+        return e.__class__.__name__ == "UniqueViolation" or "unique" in str(e).lower() or "duplicate key" in str(e).lower()
+    return isinstance(e, sqlite3.IntegrityError)
+
 def parse_data_url(u):
     if not u or "," not in u: return None
     try:
@@ -97,7 +149,6 @@ def parse_data_url(u):
         mime = header.split(";")[0].replace("data:", "") if "data:" in header else "image/png"
         return {"mimeType": mime, "data": data}
     except: return None
-def _get_conn(): return sqlite3.connect(DB_PATH, timeout=30.0)
 
 # ─── SMTP ────────────────────────────────────────────────────────────────────
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
@@ -900,22 +951,42 @@ def _safe_slug(s):
 
 
 def _persist_comic_page(pil_image, username, file_id, page_num):
-    """Save the composited page permanently to disk + record it in the DB, so it survives
-    beyond the single response (previously only a base64 blob was returned and never stored)."""
+    """Save the composited page permanently so it survives beyond the single response.
+    When running against Postgres (Supabase), the image bytes themselves are stored as
+    base64 directly in the comic_pages row — this is what makes it survive a Render
+    redeploy, since it's no longer sitting on Render's ephemeral local disk at all.
+    When no DATABASE_URL is configured, falls back to local disk (fine for local dev,
+    but will still be wiped on every Render redeploy without a persistent disk)."""
     try:
         uslug = _safe_slug(username)
         fslug = _safe_slug(file_id)
-        user_dir = os.path.join(COMICS_DIR, uslug)
-        os.makedirs(user_dir, exist_ok=True)
         filename = f"{fslug}_page{page_num}.png"
-        filepath = os.path.join(user_dir, filename)
-        pil_image.save(filepath, format="PNG", optimize=True)
+
+        buf = io.BytesIO()
+        pil_image.save(buf, format="PNG", optimize=True)
+        png_bytes = buf.getvalue()
 
         conn = _get_conn(); cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO comic_pages (username, file_id, page_number, filename) VALUES (?, ?, ?, ?)",
-            (uslug, fslug, page_num, f"{uslug}/{filename}")
-        )
+
+        if USE_POSTGRES:
+            img_b64 = base64.b64encode(png_bytes).decode("utf-8")
+            # Overwrite any previous version of this exact page (regeneration case)
+            cursor.execute(_q("DELETE FROM comic_pages WHERE username=? AND file_id=? AND page_number=?"),
+                            (uslug, fslug, page_num))
+            cursor.execute(
+                _q("INSERT INTO comic_pages (username, file_id, page_number, filename, image_base64) VALUES (?, ?, ?, ?, ?)"),
+                (uslug, fslug, page_num, f"{uslug}/{filename}", img_b64)
+            )
+        else:
+            user_dir = os.path.join(COMICS_DIR, uslug)
+            os.makedirs(user_dir, exist_ok=True)
+            with open(os.path.join(user_dir, filename), "wb") as fh:
+                fh.write(png_bytes)
+            cursor.execute(
+                _q("INSERT INTO comic_pages (username, file_id, page_number, filename) VALUES (?, ?, ?, ?)"),
+                (uslug, fslug, page_num, f"{uslug}/{filename}")
+            )
+
         conn.commit(); conn.close()
         return f"/api/comics/{uslug}/{filename}"
     except Exception as e:
@@ -1022,7 +1093,7 @@ def render_comic_pages():
     if username and (not avatar_desc or not global_alignments):
         conn   = _get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT avatar_desc, global_alignments FROM users WHERE username=?", (username.lower(),))
+        cursor.execute(_q("SELECT avatar_desc, global_alignments FROM users WHERE username=?"), (username.lower(),))
         row = cursor.fetchone(); conn.close()
         if row:
             avatar_desc       = avatar_desc or row[0] or ""
@@ -1446,6 +1517,19 @@ def _svg_fallback(page_num, total_pages, mood):
 def serve_comic_page(username, filename):
     uslug = _safe_slug(username)
     fname = os.path.basename(filename)  # strip any path traversal attempt
+
+    if USE_POSTGRES:
+        conn = _get_conn(); cursor = conn.cursor()
+        cursor.execute(_q("SELECT image_base64 FROM comic_pages WHERE username=? AND filename=? ORDER BY created_at DESC LIMIT 1"),
+                       (uslug, f"{uslug}/{fname}"))
+        row = cursor.fetchone(); conn.close()
+        if not row or not row[0]:
+            return jsonify({"error": "Image not found"}), 404
+        png_bytes = base64.b64decode(row[0])
+        resp = app.response_class(png_bytes, mimetype="image/png")
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
     user_dir = os.path.join(COMICS_DIR, uslug)
     return send_from_directory(user_dir, fname, mimetype="image/png")
 
@@ -1455,7 +1539,7 @@ def list_comic_pages(username):
     uslug = _safe_slug(username)
     conn = _get_conn(); cursor = conn.cursor()
     cursor.execute(
-        "SELECT file_id, page_number, filename, created_at FROM comic_pages WHERE username=? ORDER BY created_at DESC",
+        _q("SELECT file_id, page_number, filename, created_at FROM comic_pages WHERE username=? ORDER BY created_at DESC"),
         (uslug,)
     )
     rows = cursor.fetchall(); conn.close()
@@ -1483,11 +1567,14 @@ def register_vault_identity():
     if not username or not password: return jsonify({"error":"Username and password required."}), 400
     conn = _get_conn(); cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO users (username,password_hash) VALUES (?,?)", (username.lower(), hash_password(password)))
-        cursor.execute("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)", (username.lower(), json.dumps(_build_initial_seed())))
+        cursor.execute(_q("INSERT INTO users (username,password_hash) VALUES (?,?)"), (username.lower(), hash_password(password)))
+        cursor.execute(_q("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)"), (username.lower(), json.dumps(_build_initial_seed())))
         conn.commit()
         return jsonify({"status":"Success","message":"Vault created!"}), 201
-    except sqlite3.IntegrityError: return jsonify({"error":"Username already taken."}), 409
+    except Exception as e:
+        conn.rollback() if USE_POSTGRES else None
+        if _is_unique_violation(e): return jsonify({"error":"Username already taken."}), 409
+        raise
     finally: conn.close()
 
 @app.route("/api/auth/request-otp", methods=["POST"])
@@ -1520,12 +1607,15 @@ def register_identity():
     if not otp_store.get(f"verified:email:{email}"): return jsonify({"error":"Email not verified."}), 403
     conn=_get_conn(); cursor=conn.cursor()
     try:
-        cursor.execute("INSERT INTO users (username,password_hash) VALUES (?,?)", (username.lower(), hash_password(password)))
-        cursor.execute("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)", (username.lower(), json.dumps(_build_initial_seed())))
+        cursor.execute(_q("INSERT INTO users (username,password_hash) VALUES (?,?)"), (username.lower(), hash_password(password)))
+        cursor.execute(_q("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)"), (username.lower(), json.dumps(_build_initial_seed())))
         conn.commit()
         otp_store.pop(f"email:{email}",None); otp_store.pop(f"verified:email:{email}",None)
         return jsonify({"status":"Success","username":username,"avatar_desc":"programmer in minimalist hoodie, sleek glasses","global_alignments":{},"fs_tree":_build_initial_seed()}), 201
-    except sqlite3.IntegrityError: return jsonify({"error":"Username already taken."}), 409
+    except Exception as e:
+        conn.rollback() if USE_POSTGRES else None
+        if _is_unique_violation(e): return jsonify({"error":"Username already taken."}), 409
+        raise
     finally: conn.close()
 
 @app.route("/api/login", methods=["POST"])
@@ -1534,10 +1624,10 @@ def verify_vault_access():
     username=data.get("username","").strip(); password=data.get("password","").strip()
     if not username or not password: return jsonify({"error":"Missing credentials."}), 400
     conn=_get_conn(); cursor=conn.cursor()
-    cursor.execute("SELECT password_hash,avatar_desc,global_alignments FROM users WHERE username=?", (username.lower(),))
+    cursor.execute(_q("SELECT password_hash,avatar_desc,global_alignments FROM users WHERE username=?"), (username.lower(),))
     row=cursor.fetchone()
     if not row or row[0]!=hash_password(password): conn.close(); return jsonify({"error":"Invalid credentials."}), 401
-    cursor.execute("SELECT fs_tree_json FROM file_systems WHERE username=?", (username.lower(),))
+    cursor.execute(_q("SELECT fs_tree_json FROM file_systems WHERE username=?"), (username.lower(),))
     fs_row=cursor.fetchone(); conn.close()
     return jsonify({"status":"Success","username":username,"avatar_desc":row[1],
                     "global_alignments":json.loads(row[2] or "{}"),
@@ -1552,17 +1642,17 @@ def commit_matrix_state():
     avatar=data.get("avatar_desc","programmer in minimalist hoodie, sleek glasses")
     ga=data.get("global_alignments",{})
     conn=_get_conn(); cursor=conn.cursor()
-    cursor.execute("SELECT username FROM users WHERE username=?", (uk,))
+    cursor.execute(_q("SELECT username FROM users WHERE username=?"), (uk,))
     if cursor.fetchone():
-        cursor.execute("UPDATE users SET avatar_desc=?,global_alignments=? WHERE username=?", (avatar,json.dumps(ga),uk))
+        cursor.execute(_q("UPDATE users SET avatar_desc=?,global_alignments=? WHERE username=?"), (avatar,json.dumps(ga),uk))
     else:
-        cursor.execute("INSERT INTO users (username,password_hash,avatar_desc,global_alignments) VALUES (?,?,?,?)",
+        cursor.execute(_q("INSERT INTO users (username,password_hash,avatar_desc,global_alignments) VALUES (?,?,?,?)"),
                        (uk,hash_password("changeme"),avatar,json.dumps(ga)))
-    cursor.execute("SELECT username FROM file_systems WHERE username=?", (uk,))
+    cursor.execute(_q("SELECT username FROM file_systems WHERE username=?"), (uk,))
     if cursor.fetchone():
-        cursor.execute("UPDATE file_systems SET fs_tree_json=? WHERE username=?", (json.dumps(fs_tree),uk))
+        cursor.execute(_q("UPDATE file_systems SET fs_tree_json=? WHERE username=?"), (json.dumps(fs_tree),uk))
     else:
-        cursor.execute("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)", (uk,json.dumps(fs_tree)))
+        cursor.execute(_q("INSERT INTO file_systems (username,fs_tree_json) VALUES (?,?)"), (uk,json.dumps(fs_tree)))
     conn.commit(); conn.close()
     return jsonify({"status":"Success","message":"State saved."})
 
@@ -1572,7 +1662,7 @@ def update_entry_characters():
     username=data.get("username"); file_id=data.get("file_id"); characters=data.get("characters")
     if not username or not file_id or characters is None: return jsonify({"error":"username, file_id, characters required."}), 400
     uk=username.lower(); conn=_get_conn(); cursor=conn.cursor()
-    cursor.execute("SELECT fs_tree_json FROM file_systems WHERE username=?", (uk,))
+    cursor.execute(_q("SELECT fs_tree_json FROM file_systems WHERE username=?"), (uk,))
     row=cursor.fetchone()
     if not row: conn.close(); return jsonify({"error":"User not found."}), 404
     fs=json.loads(row[0])
@@ -1583,7 +1673,7 @@ def update_entry_characters():
                 if patch(n.get("children",[]),tid,chars): return True
         return False
     if not patch(fs,file_id,characters): conn.close(); return jsonify({"error":"File not found."}), 404
-    cursor.execute("UPDATE file_systems SET fs_tree_json=? WHERE username=?", (json.dumps(fs),uk))
+    cursor.execute(_q("UPDATE file_systems SET fs_tree_json=? WHERE username=?"), (json.dumps(fs),uk))
     conn.commit(); conn.close()
     return jsonify({"status":"Success"})
 
@@ -1592,7 +1682,7 @@ def get_global_alignments():
     username=request.args.get("username","").strip().lower()
     if not username: return jsonify({"error":"username required."}), 400
     conn=_get_conn(); cursor=conn.cursor()
-    cursor.execute("SELECT avatar_desc,global_alignments FROM users WHERE username=?", (username,))
+    cursor.execute(_q("SELECT avatar_desc,global_alignments FROM users WHERE username=?"), (username,))
     row=cursor.fetchone(); conn.close()
     if not row: return jsonify({"error":"User not found."}), 404
     return jsonify({"status":"Success","avatar_desc":row[0],"global_alignments":json.loads(row[1] or "{}")})
@@ -1607,7 +1697,7 @@ def update_global_alignments():
     updates=["global_alignments=?"]; params=[json.dumps(ga)]
     if ad is not None: updates.append("avatar_desc=?"); params.append(ad)
     params.append(username)
-    cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE username=?", params)
+    cursor.execute(_q(f"UPDATE users SET {', '.join(updates)} WHERE username=?"), params)
     conn.commit(); conn.close()
     return jsonify({"status":"Success"})
 
@@ -1617,10 +1707,10 @@ def delete_account():
     username=data.get("username","").strip().lower(); password=data.get("password","").strip()
     if not username or not password: return jsonify({"error":"username and password required."}), 400
     conn=_get_conn(); cursor=conn.cursor()
-    cursor.execute("SELECT password_hash FROM users WHERE username=?", (username,))
+    cursor.execute(_q("SELECT password_hash FROM users WHERE username=?"), (username,))
     row=cursor.fetchone()
     if not row or row[0]!=hash_password(password): conn.close(); return jsonify({"error":"Invalid credentials."}), 401
-    cursor.execute("DELETE FROM file_systems WHERE username=?", (username,)); cursor.execute("DELETE FROM users WHERE username=?", (username,))
+    cursor.execute(_q("DELETE FROM file_systems WHERE username=?"), (username,)); cursor.execute(_q("DELETE FROM users WHERE username=?"), (username,))
     conn.commit(); conn.close()
     return jsonify({"status":"Success","message":"Account deleted."})
 
